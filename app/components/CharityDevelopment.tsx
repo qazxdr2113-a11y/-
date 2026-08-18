@@ -265,18 +265,15 @@ export default function CharityDevelopment() {
   // 線上捐款
   // ============================================================
 
-  function hasOnlineDonation(
-    item: CharityResult
-  ) {
-    return (
-      item.donation?.online ===
-        true ||
-      item.donation
-        ?.hasOnlineDonation === true ||
-      item.onlineDonation === true ||
-      item.donation === true
-    );
-  }
+function hasOnlineDonation(
+  item: CharityResult
+) {
+  return (
+    item.donation?.online === true ||
+    item.donation?.hasOnlineDonation === true ||
+    item.onlineDonation === true
+  );
+}
 
   // ============================================================
   // 定期捐款
@@ -298,18 +295,14 @@ export default function CharityDevelopment() {
   // ============================================================
 
   function hasPhysicalStore(
-    item: CharityResult
-  ) {
-    return (
-      item.physicalStore
-        ?.hasPhysicalStore ===
-        true ||
-      item.hasPhysicalStore ===
-        true ||
-      item.physicalStore === true ||
-      !!item.address
-    );
-  }
+  item: CharityResult
+) {
+  return (
+    item.physicalStore?.hasPhysicalStore === true ||
+    item.hasPhysicalStore === true ||
+    !!item.address
+  );
+}
 
   // ============================================================
   // 勸募資訊

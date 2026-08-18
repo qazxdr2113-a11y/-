@@ -989,9 +989,6 @@ export async function POST(
             category:
                 categoryResult.primary,
 
-            type:
-                categoryResult.primary,
-
             categories:
                 categoryResult.categories,
 
