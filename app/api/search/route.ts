@@ -1,28 +1,56 @@
 import { NextResponse } from "next/server";
+import { DDGS } from "@phukon/duckduckgo-search";
+
+export const dynamic = "force-dynamic";
 
 // ============================================================
-// PayLead Finder
-// 商戶搜尋 API v2
+// PayLead Finder v5
 //
 // 核心策略
-// 1. Yahoo 搜尋，使用 TW 區域
-// 2. 12 組搜尋詞
-// 3. 每組搜尋最多抓 20 筆
-// 4. 搜尋階段「寬進」
-// 5. 候選階段再做相關性 / 垃圾網站 / 大型平台過濾
-// 6. 網站實際 Fetch 後再做商戶分析
-// 7. 最多分析 80 個候選網站
-// 8. 最終輸出 30 筆
-// 9. 合作平台優先
-// 10. Lead Score + 搜尋相關性共同排序
 //
-// Yahoo 目前的結果通常以 algo-sr / compTitle / compText
-// 結構呈現，因此這裡同時支援多種 HTML 結構。
+// 1. 不使用 OpenAI
+// 2. 不使用 Yahoo
+// 3. 不直接解析 Bing / Google HTML
+// 4. DuckDuckGo Search library 為主搜尋層
+// 5. 搜尋詞依產業自動擴展
+// 6. 搜尋階段寬進
+// 7. Domain / Path / Title / SEO 多層排除
+// 8. Website Fetch 後再次確認商戶資格
+// 9. 台灣商戶優先
+// 10. 合作平台優先
+// 11. 搜尋快取
+// 12. 最多分析 60 個網站
+// 13. 最終輸出 30 筆
+//
+// 完全不使用 OPENAI
 // ============================================================
 
 
 // ============================================================
-// 合作平台
+// Type
+// ============================================================
+
+type SearchResult = {
+    title: string;
+    url: string;
+    description: string;
+    query: string;
+    source: string;
+};
+
+type Candidate = SearchResult & {
+    relevanceScore: number;
+    appearanceCount: number;
+};
+
+type PlatformResult = {
+    platform: string;
+    evidence: string[];
+};
+
+
+// ============================================================
+// Cooperation Platforms
 // ============================================================
 
 const cooperationPlatforms = [
@@ -39,10 +67,11 @@ const cooperationPlatforms = [
 
 
 // ============================================================
-// 平台指紋
+// Platform Fingerprints
 // ============================================================
 
 const fingerprints = [
+
     {
         name: "gogoshop",
         keywords: [
@@ -60,7 +89,7 @@ const fingerprints = [
             "image-cdn.qdm.cloud",
             "image-cdn-flare.qdm.cloud",
             "qdm_user_uuid",
-            "QDMPPID",
+            "qdmppid",
         ],
     },
 
@@ -129,6 +158,7 @@ const fingerprints = [
             "cdn.shopify.com",
             "myshopify.com",
             "shopify.theme",
+            "shopify-section",
         ],
     },
 
@@ -150,25 +180,50 @@ const fingerprints = [
             "wp-content/plugins/woocommerce",
         ],
     },
+
+    {
+        name: "cyberbiz",
+        keywords: [
+            "cyberbiz",
+            "cyberbiz.io",
+        ],
+    },
+
+    {
+        name: "meepshop",
+        keywords: [
+            "meepshop",
+            "meepcloud",
+        ],
+    },
 ];
 
 
 // ============================================================
-// 排除 Domain
-//
-// 注意：
-// 這裡是「一定不要當商戶」的網站
+// Excluded Domains
 // ============================================================
 
 const excludedDomains = [
 
-    // --------------------------------------------------------
-    // 社群
-    // --------------------------------------------------------
+    // ========================================================
+    // Search
+    // ========================================================
+
+    "google.com",
+    "google.com.tw",
+    "bing.com",
+    "yahoo.com",
+    "yahoo.com.tw",
+    "duckduckgo.com",
+
+    // ========================================================
+    // Social
+    // ========================================================
 
     "facebook.com",
     "instagram.com",
     "youtube.com",
+    "youtu.be",
     "tiktok.com",
     "twitter.com",
     "x.com",
@@ -176,72 +231,73 @@ const excludedDomains = [
     "threads.net",
     "pinterest.com",
 
-    // --------------------------------------------------------
-    // 大型電商 / Marketplace
-    // --------------------------------------------------------
+    // ========================================================
+    // Marketplace
+    // ========================================================
 
     "momo.com.tw",
     "momoshop.com.tw",
+
     "pchome.com.tw",
+
     "shopee.tw",
     "shopee.com",
+
     "ruten.com.tw",
+
     "buy123.com.tw",
-    "yahoo.com",
-    "yahoo.com.tw",
-    "shopping.yahoo.com",
-    "tw.buy.yahoo.com",
+
     "taobao.com",
     "tmall.com",
     "1688.com",
     "jd.com",
+
     "amazon.com",
     "amazon.com.tw",
 
-    // --------------------------------------------------------
-    // 外送 / 聚合平台
-    // --------------------------------------------------------
+    // ========================================================
+    // Delivery / Aggregator
+    // ========================================================
 
     "ubereats.com",
-    "foodpanda.com.tw",
+
     "foodpanda.com",
+    "foodpanda.com.tw",
+
     "inline.app",
     "inline.company",
-    "eztable.com",
-    "shopback.com.tw",
-    "shopback.com",
 
-    // --------------------------------------------------------
-    // 評價 / 聚合 / 旅遊
-    // --------------------------------------------------------
+    "eztable.com",
+
+    "shopback.com",
+    "shopback.com.tw",
+
+    // ========================================================
+    // Travel / Review
+    // ========================================================
 
     "tripadvisor.com",
     "tripadvisor.com.tw",
-    "google.com",
-    "google.com.tw",
-    "googleusercontent.com",
-    "maps.google.com",
 
-    // --------------------------------------------------------
-    // 搜尋引擎
-    // --------------------------------------------------------
-
-    "bing.com",
-
-    // --------------------------------------------------------
-    // 新聞 / 媒體
-    // --------------------------------------------------------
+    // ========================================================
+    // Media
+    // ========================================================
 
     "vogue.com",
     "vogue.com.tw",
+
     "gq.com",
     "gq.com.tw",
+
     "elle.com",
     "elle.com.tw",
+
     "marieclaire.com",
+
     "businessweekly.com.tw",
     "cw.com.tw",
     "storm.mg",
+
     "setn.com",
     "ettoday.net",
     "udn.com",
@@ -250,104 +306,118 @@ const excludedDomains = [
     "tvbs.com.tw",
     "ctee.com.tw",
     "moneydj.com",
-    "news.yahoo.com",
+    "cna.com.tw",
 
-    // --------------------------------------------------------
-    // Blog / 內容平台
-    // --------------------------------------------------------
+    // ========================================================
+    // Blog / Content
+    // ========================================================
 
     "medium.com",
     "substack.com",
     "blogspot.com",
     "wordpress.com",
     "pixnet.net",
-    "blog.xuite.net",
+    "xuite.net",
 
-    // --------------------------------------------------------
-    // Q&A / 知識 / 論壇
-    // --------------------------------------------------------
+    // ========================================================
+    // Forum / Q&A
+    // ========================================================
 
     "wikipedia.org",
+
     "faq.tw",
     "faqs.tw",
+
     "ptt.cc",
     "dcard.tw",
+
     "reddit.com",
     "quora.com",
 
-    // --------------------------------------------------------
-    // 求職
-    // --------------------------------------------------------
+    // ========================================================
+    // Jobs
+    // ========================================================
 
     "104.com.tw",
     "1111.com.tw",
     "518.com.tw",
 
-    // --------------------------------------------------------
-    // 政府 / 公共
-    // --------------------------------------------------------
+    // ========================================================
+    // Government
+    // ========================================================
 
     "gov.tw",
 ];
 
 
 // ============================================================
-// 強制排除 Domain
+// Hard Excluded Domains
 // ============================================================
 
 const hardExcludedDomains = [
 
-    // --------------------------------------------------------
-    // 便利商店
-    // --------------------------------------------------------
+    // ========================================================
+    // Convenience
+    // ========================================================
 
     "7-11.com.tw",
     "7-11.com",
+
     "family.com.tw",
+
     "hilife.com.tw",
+
     "okmart.com.tw",
 
-    // --------------------------------------------------------
-    // 大型零售
-    // --------------------------------------------------------
+    // ========================================================
+    // Large Retail
+    // ========================================================
 
     "pxmart.com.tw",
-    "carrefour.com.tw",
-    "costco.com.tw",
-    "watsons.com.tw",
-    "watsons.com",
 
-    // --------------------------------------------------------
-    // 大型品牌
-    // --------------------------------------------------------
+    "carrefour.com.tw",
+
+    "costco.com.tw",
+
+    // ========================================================
+    // Large Brands
+    // ========================================================
 
     "uniqlo.com",
+
     "gu-global.com",
+
     "giordano.com",
 
-    // --------------------------------------------------------
-    // 平台 / SaaS
-    // --------------------------------------------------------
+    // ========================================================
+    // SaaS Company Itself
+    // ========================================================
 
     "cyberbiz.io",
+
     "meepshop.com",
+
     "supportmeepshop.com",
+
     "shoplineapp.com",
+
     "support.shoplineapp.com",
 
-    // --------------------------------------------------------
-    // 內容 / SEO 垃圾站
-    // --------------------------------------------------------
+    // ========================================================
+    // Known SEO Noise
+    // ========================================================
 
     "uptogo.com.tw",
+
     "vibeaico.com",
+
     "rosy-arts.com",
+
     "whbydcc.com",
 
-    // --------------------------------------------------------
-    // 租車 / 汽車大型服務
-    // 避免「短袖」這種完全不相關搜尋跑出 Nissan
-    // --------------------------------------------------------
+    // ========================================================
+    // Known Irrelevant
+    // ========================================================
 
     "nissan-rentacar.com",
     "nissan-rentacar.com.tw",
@@ -355,646 +425,539 @@ const hardExcludedDomains = [
 
 
 // ============================================================
-// 排除 Path
+// Foreign Domains
+//
+// 明確不是台灣市場的先砍
+// .com / .org 保留，因為很多台灣品牌使用
+// ============================================================
+
+const foreignTlds = [
+    ".jp",
+    ".co.jp",
+
+    ".hk",
+    ".com.hk",
+
+    ".cn",
+    ".com.cn",
+
+    ".kr",
+
+    ".sg",
+
+    ".my",
+
+    ".ph",
+
+    ".in",
+
+    ".de",
+
+    ".fr",
+
+    ".co.uk",
+];
+
+
+// ============================================================
+// Excluded Paths
 // ============================================================
 
 const excludedPaths = [
 
     "/news",
+
     "/article",
     "/articles",
+
     "/blog",
     "/blogs",
+
     "/magazine",
+
     "/forum",
     "/forums",
+
     "/topic",
     "/topics",
+
     "/post",
     "/posts",
+
     "/author",
+
     "/tag",
+    "/tags",
 
     "/help",
     "/support",
+
     "/docs",
     "/documentation",
+
     "/tutorial",
     "/tutorials",
+
     "/guide",
     "/guides",
 
     "/search",
-    "/search/",
     "/query",
 ];
 
 
 // ============================================================
-// 標題垃圾訊號
+// Bad Titles
 // ============================================================
 
 const excludedTitleSignals = [
 
-    // 新聞
     "新聞",
     "新聞網",
-    "新聞報導",
-    "最新消息",
     "即時新聞",
-    "報導",
 
-    // 文章
-    "文章",
-    "專訪",
-    "編輯",
-    "媒體",
-    "雜誌",
+    "懶人包",
 
-    // 教學
-    "教學",
-    "操作教學",
-    "使用教學",
-    "設定教學",
-    "教學文件",
-    "操作說明",
-    "使用說明",
+    "攻略",
 
-    // 文件
-    "docs",
-    "documentation",
-    "help center",
-    "help centre",
-    "support",
-
-    // 評論
-    "評論",
-    "評價",
-    "心得",
-    "推薦排行",
     "排行榜",
 
-    // 聚合
-    "購物中心",
-    "優惠推薦",
-    "比價",
-    "商品比較",
+    "推薦排行",
 
-    // SEO 型內容
-    "2026",
-    "2025",
-    "完整整理",
-    "懶人包",
-    "攻略",
-    "推薦",
     "推薦清單",
+
+    "完整整理",
+
+    "評論",
+
+    "心得",
+
+    "評價",
+
     "比較",
+
+    "比價",
+
+    "教學",
+
+    "操作說明",
+
+    "使用說明",
+
+    "痞客邦",
+
+    "pixnet",
+
+    "網路開店",
+
+    "開店平台",
+
+    "架站平台",
 ];
 
 
 // ============================================================
-// 商戶訊號
+// Search Result Noise
+// ============================================================
+
+const platformNoise = [
+
+    "momo",
+
+    "pchome",
+
+    "shopee",
+    "蝦皮",
+
+    "露天",
+
+    "yahoo購物",
+
+    "uber eats",
+    "ubereats",
+
+    "foodpanda",
+
+    "tripadvisor",
+
+    "uptogo",
+
+    "pixnet",
+    "痞客邦",
+
+    "shop2000",
+
+    "網路開店平台",
+
+    "如何開店",
+
+    "開店教學",
+];
+
+
+// ============================================================
+// Merchant Strong Signals
+// ============================================================
+
+const strongMerchantSignals = [
+
+    "加入購物車",
+
+    "購物車",
+
+    "立即購買",
+
+    "立即訂購",
+
+    "checkout",
+
+    "add to cart",
+
+    "線上訂購",
+
+    "線上購物",
+
+    "線上預約",
+
+    "立即預約",
+
+    "會員登入",
+
+    "會員中心",
+
+    "門市資訊",
+
+    "門市據點",
+
+    "分店資訊",
+
+    "線上付款",
+
+    "信用卡付款",
+];
+
+
+// ============================================================
+// Merchant Signals
 // ============================================================
 
 const merchantSignals = [
 
-    "購物車",
-    "加入購物車",
-    "購物袋",
-    "cart",
-    "add to cart",
-    "checkout",
-    "結帳",
-
     "商品",
+
     "產品",
+
     "價格",
+
     "售價",
+
+    "購物車",
+
+    "加入購物車",
+
     "立即購買",
+
     "立即訂購",
+
     "訂購",
+
     "購買",
 
     "商城",
+
     "商店",
+
     "網路商店",
+
     "線上商店",
 
+    "cart",
+
+    "checkout",
+
     "會員",
+
     "會員登入",
+
     "會員中心",
+
     "登入",
+
     "註冊",
+
     "login",
+
     "register",
-    "membership",
 
     "付款",
+
     "支付",
+
     "信用卡",
-    "電子支付",
-    "行動支付",
-    "線上付款",
-    "線上支付",
-    "payment",
-    "pay",
 
     "預約",
+
     "線上預約",
-    "預約服務",
-    "booking",
-    "reservation",
 
     "訂閱",
-    "訂閱制",
-    "subscription",
+
     "月費",
-    "月租",
-    "續費",
-    "自動扣款",
 
     "門市",
+
     "門店",
+
     "分店",
+
     "據點",
+
     "店面",
-    "服務據點",
-    "旗艦店",
+
     "專櫃",
 ];
 
 
 // ============================================================
-// 金流訊號
+// Payment Signals
 // ============================================================
 
 const paymentSignals = [
 
     "付款",
+
     "支付",
+
     "信用卡",
+
+    "信用卡付款",
+
     "電子支付",
+
     "行動支付",
-    "qr code",
-    "qr付款",
+
     "線上付款",
+
     "線上支付",
-    "app付款",
-    "app支付",
-    "payment",
-    "pay",
 
     "結帳",
+
     "checkout",
 
+    "payment",
+
     "訂金",
+
     "押金",
+
     "尾款",
 
-    "會員扣款",
     "自動扣款",
+
+    "定期扣款",
+
+    "會員扣款",
+
     "續費",
+
     "月費",
+
     "月租",
+
     "訂閱",
+
     "subscription",
 
-    "預約",
-    "線上預約",
-    "booking",
-    "reservation",
+    "預約付款",
 
-    "停車",
-    "停車場",
-    "停車費",
     "停車繳費",
 
-    "充電",
-    "充電樁",
-    "充電站",
-    "電動車",
-    "ev charging",
-    "charging station",
+    "停車費",
+
     "充電費",
-
-    "租車",
-    "租借",
-    "共享",
-    "共享車",
-    "共享機車",
 ];
 
 
 // ============================================================
-// 產業訊號
-// ============================================================
-
-const industrySignals = [
-
-    "停車場",
-    "停車",
-
-    "充電樁",
-    "充電站",
-    "電動車",
-    "電動車充電",
-
-    "租車",
-    "租賃",
-    "共享機車",
-    "共享汽車",
-
-    "健身房",
-    "健身",
-    "瑜珈",
-
-    "美容",
-    "美髮",
-
-    "診所",
-    "醫美",
-
-    "教育",
-    "補習班",
-    "課程",
-
-    "展覽",
-    "活動",
-    "票券",
-
-    "旅遊",
-    "飯店",
-    "住宿",
-
-    "餐廳",
-    "餐飲",
-
-    "百貨",
-    "購物中心",
-    "服飾",
-    "鞋店",
-    "家具",
-    "家居",
-    "家電",
-    "3C",
-
-    "寵物",
-    "寵物用品",
-    "母嬰",
-
-    "食品",
-    "零食",
-    "烘焙",
-
-    "肉品",
-    "肉舖",
-    "肉品專賣",
-    "食品專賣",
-
-    "短袖",
-    "衣服",
-    "服裝",
-    "男裝",
-    "女裝",
-    "童裝",
-    "運動服",
-    "運動用品",
-];
-
-
-// ============================================================
-// POS 訊號
+// Physical Signals
 // ============================================================
 
 const physicalSignals = [
 
     "門市",
+
     "門店",
+
     "實體店",
+
     "實體門市",
+
     "分店",
+
     "據點",
+
     "服務據點",
+
     "營業據點",
-    "店面",
-    "店址",
+
     "門市地址",
+
     "營業時間",
+
+    "店址",
+
     "旗艦店",
+
     "專櫃",
+
     "展售中心",
+
     "服務中心",
 
-    "store",
     "stores",
-    "location",
+
     "locations",
+
     "branch",
-    "branches",
+
     "retail",
-    "shop",
 ];
 
 
 // ============================================================
-// 內容網站
+// Content Signals
 // ============================================================
 
 const contentSignals = [
 
     "新聞",
+
     "媒體",
+
     "雜誌",
+
     "報導",
-    "編輯",
-    "專訪",
-    "評論",
+
     "文章",
-    "最新消息",
-    "新聞網",
+
+    "作者",
+
+    "編輯",
+
+    "專訪",
+
+    "評論",
+
+    "心得",
+
+    "news",
+
+    "media",
 
     "magazine",
-    "news",
-    "media",
-    "article",
-    "editor",
-    "report",
 
-    "tutorial",
-    "documentation",
-    "help center",
-    "support",
+    "article",
+
+    "editor",
 
     "懶人包",
+
     "攻略",
+
     "排行榜",
+
     "推薦清單",
 ];
 
 
 // ============================================================
-// 泛商業詞
+// Taiwan Signals
 // ============================================================
 
-const genericBusinessWords = [
-    "公司",
-    "企業",
-    "品牌",
-    "業者",
-    "商家",
-    "廠商",
-];
-
-
-// ============================================================
-// 地區
-// ============================================================
-
-const locationWords = [
-
-    "台北市",
-    "台北",
-    "臺北市",
-    "臺北",
-
-    "新北市",
-    "新北",
-
-    "桃園市",
-    "桃園",
-
-    "台中市",
-    "台中",
-    "臺中市",
-    "臺中",
-
-    "台南市",
-    "台南",
-    "臺南市",
-    "臺南",
-
-    "高雄市",
-    "高雄",
-
-    "基隆市",
-    "基隆",
-
-    "新竹市",
-    "新竹縣",
-    "新竹",
-
-    "苗栗縣",
-    "苗栗",
-
-    "彰化縣",
-    "彰化",
-
-    "南投縣",
-    "南投",
-
-    "雲林縣",
-    "雲林",
-
-    "嘉義市",
-    "嘉義縣",
-    "嘉義",
-
-    "屏東縣",
-    "屏東",
-
-    "宜蘭縣",
-    "宜蘭",
-
-    "花蓮縣",
-    "花蓮",
-
-    "台東縣",
-    "台東",
-    "臺東縣",
-    "臺東",
-
-    "澎湖縣",
-    "澎湖",
-
-    "金門縣",
-    "金門",
-
-    "連江縣",
-    "馬祖",
+const taiwanSignals = [
 
     "台灣",
     "臺灣",
-    "Taiwan",
-    "Taipei",
+
+    "台北",
+    "臺北",
+
+    "新北",
+
+    "桃園",
+
+    "新竹",
+
+    "苗栗",
+
+    "台中",
+    "臺中",
+
+    "彰化",
+
+    "南投",
+
+    "雲林",
+
+    "嘉義",
+
+    "台南",
+    "臺南",
+
+    "高雄",
+
+    "屏東",
+
+    "宜蘭",
+
+    "花蓮",
+
+    "台東",
+    "臺東",
+
+    "基隆",
+
+    "澎湖",
+
+    "金門",
+
+    "taiwan",
+
+    "taipei",
+
+    "kaohsiung",
 ];
 
 
 // ============================================================
-// 禁止搜尋平台
+// Search Cache
 // ============================================================
 
-const forbiddenPlatformWords = [
-
-    "qdm",
-    "easystore",
-    "waca",
-    "gogoshop",
-    "liteshop",
-    "showmore",
-    "開店123",
-    "尚峪",
-    "shopify",
-    "shopline",
-    "woocommerce",
-    "cyberbiz",
-    "meepshop",
-];
-
-
-// ============================================================
-// Query 清理
-// ============================================================
-
-function sanitizeQuery(query: string) {
-
-    let result = query.trim();
-
-    for (const word of locationWords) {
-
-        result = result.replace(
-            new RegExp(
-                word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
-                "gi"
-            ),
-            " "
-        );
-    }
-
-    for (const word of genericBusinessWords) {
-
-        result = result.replace(
-            new RegExp(
-                word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
-                "gi"
-            ),
-            " "
-        );
-    }
-
-    return result
-        .replace(/\s+/g, " ")
-        .trim();
-}
-
-
-// ============================================================
-// Query Token
-// ============================================================
-
-function tokenize(value: string) {
-
-    return value
-        .toLowerCase()
-        .replace(/[，。！？、,.!?/\\|()[\]{}"'：:；;]/g, " ")
-        .split(/\s+/)
-        .filter(Boolean);
-}
-
-
-// ============================================================
-// Query 相關性
-// ============================================================
-
-function calculateQueryRelevance(
-    keyword: string,
-    query: string,
-    title: string,
-    description: string
-) {
-
-    const keywordTokens =
-        tokenize(keyword);
-
-    const queryTokens =
-        tokenize(query);
-
-    const resultText =
-        tokenize(
-            `${title} ${description}`
-        );
-
-    let score = 0;
-
-    for (const token of keywordTokens) {
-
-        if (token.length < 2) {
-            continue;
+const searchCache =
+    new Map<
+        string,
+        {
+            time: number;
+            results: SearchResult[];
         }
+    >();
 
-        if (
-            queryTokens.includes(token)
-        ) {
-            score += 20;
-        }
+const CACHE_TTL =
+    10 * 60 * 1000;
 
-        if (
-            resultText.includes(token)
-        ) {
-            score += 25;
-        }
-    }
 
-    // 原始搜尋詞有直接出現在標題
-    const lowerTitle =
-        title.toLowerCase();
+// ============================================================
+// Sleep
+// ============================================================
 
-    if (
-        keyword.trim().length >= 2 &&
-        lowerTitle.includes(
-            keyword.toLowerCase()
-        )
-    ) {
+function sleep(ms: number) {
 
-        score += 30;
-    }
-
-    return Math.min(
-        100,
-        score
+    return new Promise(
+        (resolve) =>
+            setTimeout(
+                resolve,
+                ms
+            )
     );
-}
-
-
-// ============================================================
-// URL Normalize
-// ============================================================
-
-function normalizeUrl(
-    rawUrl: string
-) {
-
-    try {
-
-        let value =
-            rawUrl.trim();
-
-        if (
-            !/^https?:\/\//i.test(value)
-        ) {
-
-            value =
-                `https://${value}`;
-        }
-
-        const parsed =
-            new URL(value);
-
-        return `${parsed.protocol}//${parsed.hostname}`;
-
-    } catch {
-
-        return rawUrl;
-    }
 }
 
 
@@ -1011,7 +974,10 @@ function getHostname(
         return new URL(url)
             .hostname
             .toLowerCase()
-            .replace(/^www\./, "");
+            .replace(
+                /^www\./,
+                ""
+            );
 
     } catch {
 
@@ -1021,7 +987,95 @@ function getHostname(
 
 
 // ============================================================
-// Domain 是否被排除
+// Root URL
+// ============================================================
+
+function getRootUrl(
+    url: string
+) {
+
+    try {
+
+        const parsed =
+            new URL(url);
+
+        return (
+            parsed.protocol +
+            "//" +
+            parsed.hostname
+        );
+
+    } catch {
+
+        return "";
+    }
+}
+
+
+// ============================================================
+// Normalize URL
+// ============================================================
+
+function normalizeUrl(
+    rawUrl: string
+) {
+
+    try {
+
+        let value =
+            rawUrl.trim();
+
+        if (!value) {
+            return "";
+        }
+
+        if (
+            value.startsWith("//")
+        ) {
+
+            value =
+                `https:${value}`;
+        }
+
+        if (
+            !/^https?:\/\//i.test(
+                value
+            )
+        ) {
+
+            return "";
+        }
+
+        const parsed =
+            new URL(value);
+
+        parsed.hash = "";
+
+        const pathname =
+            parsed.pathname === "/"
+                ? ""
+                : parsed.pathname
+                    .replace(
+                        /\/+$/,
+                        ""
+                    );
+
+        return (
+            parsed.protocol +
+            "//" +
+            parsed.hostname +
+            pathname
+        );
+
+    } catch {
+
+        return "";
+    }
+}
+
+
+// ============================================================
+// Domain Filter
 // ============================================================
 
 function isExcludedDomain(
@@ -1040,18 +1094,38 @@ function isExcludedDomain(
         ...hardExcludedDomains,
     ];
 
-    return allExcluded.some(
-        (domain) =>
-            hostname === domain ||
-            hostname.endsWith(
-                `.${domain}`
-            )
-    );
+    if (
+        allExcluded.some(
+            (domain) =>
+                hostname === domain ||
+                hostname.endsWith(
+                    `.${domain}`
+                )
+        )
+    ) {
+
+        return true;
+    }
+
+
+    if (
+        foreignTlds.some(
+            (tld) =>
+                hostname.endsWith(
+                    tld
+                )
+        )
+    ) {
+
+        return true;
+    }
+
+    return false;
 }
 
 
 // ============================================================
-// Path 是否被排除
+// Path Filter
 // ============================================================
 
 function isExcludedPath(
@@ -1075,1844 +1149,56 @@ function isExcludedPath(
 
     } catch {
 
-        return false;
+        return true;
     }
 }
 
 
 // ============================================================
-// HTML Clean
+// URL Firewall
 // ============================================================
 
-function cleanHtml(
-    html: string
-) {
-
-    return html
-
-        .replace(
-            /<script[\s\S]*?<\/script>/gi,
-            " "
-        )
-
-        .replace(
-            /<style[\s\S]*?<\/style>/gi,
-            " "
-        )
-
-        .replace(
-            /<noscript[\s\S]*?<\/noscript>/gi,
-            " "
-        )
-
-        .replace(
-            /<svg[\s\S]*?<\/svg>/gi,
-            " "
-        )
-
-        .replace(
-            /<[^>]+>/g,
-            " "
-        )
-
-        .replace(
-            /&nbsp;/gi,
-            " "
-        )
-
-        .replace(
-            /&amp;/gi,
-            "&"
-        )
-
-        .replace(
-            /&quot;/gi,
-            '"'
-        )
-
-        .replace(
-            /&#39;/gi,
-            "'"
-        )
-
-        .replace(
-            /\s+/g,
-            " "
-        )
-
-        .trim();
-}
-
-
-// ============================================================
-// 找訊號
-// ============================================================
-
-function findSignals(
-    text: string,
-    signals: string[]
-) {
-
-    const lower =
-        text.toLowerCase();
-
-    return signals.filter(
-        (signal) =>
-            lower.includes(
-                signal.toLowerCase()
-            )
-    );
-}
-
-
-// ============================================================
-// Website Fetch
-// ============================================================
-
-async function fetchWebsite(
+function shouldExcludeUrl(
     url: string
 ) {
 
-    try {
-
-        const response =
-            await fetch(
-                url,
-                {
-                    headers: {
-
-                        "User-Agent":
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
-
-                        Accept:
-                            "text/html,application/xhtml+xml",
-                    },
-
-                    redirect:
-                        "follow",
-
-                    signal:
-                        AbortSignal.timeout(
-                            7000
-                        ),
-                }
-            );
-
-        if (!response.ok) {
-            return "";
-        }
-
-        return await response.text();
-
-    } catch {
-
-        return "";
-    }
-}
-
-
-// ============================================================
-// Website 分析
-// ============================================================
-
-function analyzeContent(
-    title: string,
-    description: string,
-    websiteText: string
-) {
-
-    const text =
-        `${title} ${description} ${websiteText}`;
-
-    const merchantFound =
-        findSignals(
-            text,
-            merchantSignals
-        );
-
-    const paymentFound =
-        findSignals(
-            text,
-            paymentSignals
-        );
-
-    const physicalFound =
-        findSignals(
-            text,
-            physicalSignals
-        );
-
-    const industryFound =
-        findSignals(
-            text,
-            industrySignals
-        );
-
-    const contentFound =
-        findSignals(
-            text,
-            contentSignals
-        );
-
-
-    // --------------------------------------------------------
-    // Merchant
-    // --------------------------------------------------------
-
-    let merchantScore =
-        merchantFound.length * 5;
-
-    if (
-        websiteText.length > 500
-    ) {
-
-        merchantScore += 10;
-    }
-
-
-    // --------------------------------------------------------
-    // Payment
-    // --------------------------------------------------------
-
-    let paymentScore =
-        paymentFound.length * 7;
-
-    paymentScore +=
-        industryFound.length * 3;
-
-
-    // --------------------------------------------------------
-    // Physical
-    // --------------------------------------------------------
-
-    let physicalScore =
-        physicalFound.length * 7;
-
-
-    // --------------------------------------------------------
-    // 強金流訊號
-    // --------------------------------------------------------
-
-    const strongPaymentSignals = [
-
-        "購物車",
-        "加入購物車",
-        "checkout",
-        "結帳",
-        "付款",
-        "支付",
-        "線上付款",
-        "停車繳費",
-        "充電費",
-        "自動扣款",
-        "會員扣款",
-        "訂閱",
-    ];
-
-    const hasStrongPayment =
-        paymentFound.some(
-            (signal) =>
-                strongPaymentSignals.includes(
-                    signal
-                )
-        );
-
-    if (
-        hasStrongPayment
-    ) {
-
-        paymentScore += 20;
-    }
-
-
-    merchantScore =
-        Math.min(
-            100,
-            merchantScore
-        );
-
-    paymentScore =
-        Math.min(
-            100,
-            paymentScore
-        );
-
-    physicalScore =
-        Math.min(
-            100,
-            physicalScore
-        );
-
-
-    // --------------------------------------------------------
-    // Content penalty
-    // --------------------------------------------------------
-
-    const contentPenalty =
-        contentFound.length * 3;
-
-
-    // --------------------------------------------------------
-    // Lead Score
-    // --------------------------------------------------------
-
-    let leadScore =
-        merchantScore * 0.35 +
-        paymentScore * 0.40 +
-        physicalScore * 0.25 -
-        contentPenalty;
-
-    leadScore =
-        Math.max(
-            0,
-            Math.min(
-                100,
-                leadScore
-            )
-        );
-
-
-    return {
-
-        merchantScore,
-
-        paymentScore,
-
-        physicalScore,
-
-        leadScore:
-            Math.round(
-                leadScore
-            ),
-
-        merchantSignals:
-            merchantFound.slice(0, 15),
-
-        paymentSignals:
-            paymentFound.slice(0, 15),
-
-        physicalSignals:
-            physicalFound.slice(0, 15),
-
-        industrySignals:
-            industryFound.slice(0, 15),
-
-        contentSignals:
-            contentFound.slice(0, 10),
-
-        hasPhysicalStore:
-            physicalFound.length >= 2,
-
-        hasPaymentNeed:
-            paymentScore >= 20,
-    };
-}
-
-
-// ============================================================
-// 平台辨識
-// ============================================================
-
-function detectPlatform(
-    html: string
-) {
-
-    const lowerHtml =
-        html.toLowerCase();
-
-    const results =
-        fingerprints
-            .map(
-                (fingerprint) => {
-
-                    const found =
-                        fingerprint.keywords.filter(
-                            (keyword) =>
-                                lowerHtml.includes(
-                                    keyword.toLowerCase()
-                                )
-                        );
-
-                    return {
-
-                        name:
-                            fingerprint.name,
-
-                        found,
-
-                        score:
-                            found.length,
-                    };
-                }
-            )
-            .sort(
-                (a, b) =>
-                    b.score -
-                    a.score
-            );
-
-    const best =
-        results[0];
-
-    if (
-        !best ||
-        best.score === 0
-    ) {
-
-        return {
-
-            platform:
-                "Unknown",
-
-            evidence:
-                [],
-        };
-    }
-
-    return {
-
-        platform:
-            best.name,
-
-        evidence:
-            best.found,
-    };
-}
-
-
-// ============================================================
-// 品牌辨識
-// ============================================================
-
-function detectBrand(
-    html: string,
-    url: string
-) {
-
-    const ogSiteName =
-        html.match(
-            /<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']/i
-        );
-
-    if (
-        ogSiteName?.[1]
-    ) {
-
-        return ogSiteName[1]
-            .replace(
-                /\s+/g,
-                " "
-            )
-            .trim();
-    }
-
-    const title =
-        html.match(
-            /<title[^>]*>([\s\S]*?)<\/title>/i
-        );
-
-    if (
-        title?.[1]
-    ) {
-
-        return title[1]
-
-            .replace(
-                /&amp;/g,
-                "&"
-            )
-
-            .replace(
-                /\s+/g,
-                " "
-            )
-
-            .replace(
-                /\s*[|｜]\s*.*$/g,
-                ""
-            )
-
-            .trim();
-    }
-
-    return (
-        getHostname(url)
-            .split(".")[0] ||
-        "未知品牌"
-    );
-}
-
-
-// ============================================================
-// 固定搜尋策略
-//
-// 重點：
-// 不要只搜尋「購物車」這種高度競爭詞
-// 增加比較偏商戶 / 官網 / 服務型的搜尋詞
-// ============================================================
-
-function getFallbackQueries(
-    keyword: string
-) {
-
-    const cleanKeyword =
-        sanitizeQuery(
-            keyword
-        );
-
-    const queries = [
-
-        `${cleanKeyword} 官網`,
-
-        `${cleanKeyword} 線上購物`,
-
-        `${cleanKeyword} 線上訂購`,
-
-        `${cleanKeyword} 線上預約`,
-
-        `${cleanKeyword} 官方網站`,
-
-        `${cleanKeyword} 商品 售價`,
-
-        `${cleanKeyword} 會員`,
-
-        `${cleanKeyword} 門市`,
-
-        `${cleanKeyword} 分店`,
-
-        `${cleanKeyword} 訂購 付款`,
-
-        `${cleanKeyword} 收費 預約`,
-
-        `${cleanKeyword} 品牌 商店`,
-    ];
-
-    return queries
-
-        .map(
-            (query) =>
-                sanitizeQuery(
-                    query
-                )
-        )
-
-        .filter(Boolean)
-
-        .filter(
-            (
-                query,
-                index,
-                array
-            ) =>
-                array.indexOf(
-                    query
-                ) === index
-        )
-
-        .slice(
-            0,
-            12
-        );
-}
-
-
-// ============================================================
-// AI Query
-// ============================================================
-
-async function generateAIQueries(
-    keyword: string
-) {
-
-    const fallback =
-        getFallbackQueries(
-            keyword
-        );
-
-    const apiKey =
-        process.env.OPENAI_API_KEY;
-
-    if (!apiKey) {
-
-        return fallback;
-    }
-
-
-    const prompt = `
-你是 B2B 支付商務開發搜尋專家。
-
-使用者輸入：
-${keyword}
-
-目標：
-找到「真正的商戶官方網站」，而不是文章、新聞、論壇、購物平台或內容網站。
-
-請產生最多 12 組搜尋詞。
-
-搜尋策略：
-
-第一類：
-產業 + 官網
-產業 + 官方網站
-產業 + 品牌
-
-第二類：
-產業 + 線上購物
-產業 + 線上訂購
-產業 + 商品
-產業 + 售價
-
-第三類：
-產業 + 線上預約
-產業 + 收費
-產業 + 會員
-產業 + 訂閱
-
-第四類：
-產業 + 門市
-產業 + 分店
-產業 + 店面
-
-第五類：
-產業 + 付款
-產業 + 結帳
-產業 + 購物車
-
-不要使用任何開店平台名稱。
-
-禁止：
-QDM
-EasyStore
-WACA
-GoGoShop
-LiteShop
-ShowMore
-開店123
-尚峪
-Shopify
-Shopline
-WooCommerce
-Cyberbiz
-meepShop
-
-不要加入地區。
-
-不要使用：
-新聞
-媒體
-文章
-論壇
-評論
-教學
-攻略
-懶人包
-排行榜
-比價
-優惠推薦
-購物中心
-
-請只輸出 JSON array。
-`;
-
-    try {
-
-        const response =
-            await fetch(
-                "https://api.openai.com/v1/chat/completions",
-                {
-                    method:
-                        "POST",
-
-                    headers: {
-
-                        "Content-Type":
-                            "application/json",
-
-                        Authorization:
-                            `Bearer ${apiKey}`,
-                    },
-
-                    body:
-                        JSON.stringify({
-
-                            model:
-                                process.env.OPENAI_MODEL ||
-                                "gpt-4o-mini",
-
-                            temperature:
-                                0.5,
-
-                            messages: [
-
-                                {
-                                    role:
-                                        "system",
-
-                                    content:
-                                        "只產生 B2B 商戶搜尋詞，不得使用平台名稱。",
-                                },
-
-                                {
-                                    role:
-                                        "user",
-
-                                    content:
-                                        prompt,
-                                },
-                            ],
-                        }),
-                }
-            );
-
-        if (!response.ok) {
-            throw new Error(
-                `OpenAI ${response.status}`
-            );
-        }
-
-        const data =
-            await response.json();
-
-        const content =
-            data?.choices?.[0]
-                ?.message
-                ?.content;
-
-        if (
-            typeof content !==
-            "string"
-        ) {
-
-            throw new Error(
-                "OpenAI 沒有回傳內容"
-            );
-        }
-
-        const parsed =
-            JSON.parse(
-                content
-                    .replace(
-                        /```json/gi,
-                        ""
-                    )
-                    .replace(
-                        /```/g,
-                        ""
-                    )
-                    .trim()
-            );
-
-        if (
-            !Array.isArray(parsed)
-        ) {
-
-            throw new Error(
-                "OpenAI 格式錯誤"
-            );
-        }
-
-        const aiQueries =
-            parsed
-
-                .filter(
-                    (item) =>
-                        typeof item ===
-                        "string"
-                )
-
-                .map(
-                    (item) =>
-                        sanitizeQuery(
-                            item
-                        )
-                )
-
-                .filter(Boolean)
-
-                .filter(
-                    (query) => {
-
-                        const lower =
-                            query.toLowerCase();
-
-                        return !forbiddenPlatformWords.some(
-                            (word) =>
-                                lower.includes(
-                                    word.toLowerCase()
-                                )
-                        );
-                    }
-                )
-
-                .filter(
-                    (
-                        query,
-                        index,
-                        array
-                    ) =>
-                        array.indexOf(
-                            query
-                        ) === index
-                )
-
-                .slice(
-                    0,
-                    12
-                );
-
-        return aiQueries.length >= 5
-            ? aiQueries
-            : fallback;
-
-    } catch (error) {
-
-        console.error(
-            "AI 搜尋策略失敗：",
-            error
-        );
-
-        return fallback;
-    }
-}
-
-
-// ============================================================
-// Bad Title
-// ============================================================
-
-function isBadTitle(
-    title: string
-) {
-
-    const lower =
-        title.toLowerCase();
-
-    return excludedTitleSignals.some(
-        (signal) =>
-            lower.includes(
-                signal.toLowerCase()
-            )
-    );
-}
-
-
-// ============================================================
-// 商戶搜尋結果判斷
-//
-// 這裡故意「不要太嚴格」
-// 真正商戶資格交給網站 Fetch 後判斷
-// ============================================================
-
-function shouldKeepSearchResult(
-    result: {
-        title: string;
-        url: string;
-        description: string;
-        query?: string;
-        keyword?: string;
-    }
-) {
-
-    if (
-        !result?.url
-    ) {
-        return false;
+    if (!url) {
+        return true;
     }
 
     if (
         isExcludedDomain(
-            result.url
+            url
         )
     ) {
-        return false;
+
+        return true;
     }
 
     if (
         isExcludedPath(
-            result.url
-        )
-    ) {
-        return false;
-    }
-
-    if (
-        isBadTitle(
-            result.title
-        )
-    ) {
-        return false;
-    }
-
-    const text =
-        `${result.title} ${result.description}`
-            .toLowerCase();
-
-
-    // --------------------------------------------------------
-    // 明確內容網站
-    // --------------------------------------------------------
-
-    const contentHits =
-        findSignals(
-            text,
-            contentSignals
-        );
-
-    if (
-        contentHits.length >= 4
-    ) {
-        return false;
-    }
-
-
-    // --------------------------------------------------------
-    // 大型平台名稱直接排除
-    // --------------------------------------------------------
-
-    const platformNoise = [
-
-        "momo",
-        "pchome",
-        "shopee",
-        "蝦皮",
-        "露天",
-        "yahoo購物",
-        "yahoo shopping",
-        "uber eats",
-        "foodpanda",
-        "tripadvisor",
-        "uptogo",
-        "pixnet",
-        "痞客邦",
-    ];
-
-    if (
-        platformNoise.some(
-            (word) =>
-                text.includes(
-                    word.toLowerCase()
-                )
+            url
         )
     ) {
 
-        return false;
+        return true;
     }
 
-
-    // --------------------------------------------------------
-    // 商戶訊號
-    // --------------------------------------------------------
-
-    const merchantHits =
-        findSignals(
-            text,
-            merchantSignals
-        );
-
-    const paymentHits =
-        findSignals(
-            text,
-            paymentSignals
-        );
-
-    const industryHits =
-        findSignals(
-            text,
-            industrySignals
-        );
-
-
-    return (
-
-        merchantHits.length > 0 ||
-
-        paymentHits.length > 0 ||
-
-        industryHits.length > 0
-
-    );
+    return false;
 }
 
 
 // ============================================================
-// Recommendation
-// ============================================================
-
-function getRecommendation(
-    paymentScore: number,
-    hasPhysicalStore: boolean,
-    platform: string
-) {
-
-    const isCooperationPlatform =
-        cooperationPlatforms.includes(
-            platform
-        );
-
-    if (
-        isCooperationPlatform &&
-        paymentScore >= 40 &&
-        hasPhysicalStore
-    ) {
-
-        return "已辨識為可合作開店平台，且具明確交易與實體據點需求，建議同步評估線上金流與 POS。";
-    }
-
-    if (
-        isCooperationPlatform &&
-        paymentScore >= 40
-    ) {
-
-        return "已辨識為可合作開店平台，且具有明確交易或付款需求，建議優先評估線上金流合作。";
-    }
-
-    if (
-        paymentScore >= 50 &&
-        hasPhysicalStore
-    ) {
-
-        return "具明確交易／金流需求，且有實體門市或據點線索，建議同步評估線上金流與 POS。";
-    }
-
-    if (
-        paymentScore >= 50
-    ) {
-
-        return "具明確線上交易或付款需求，建議優先評估全支付線上金流。";
-    }
-
-    if (
-        hasPhysicalStore
-    ) {
-
-        return "網站具有實體門市或據點線索，可進一步確認是否有 POS 金流需求。";
-    }
-
-    return "具有一定商業交易潛力，可進一步確認付款、會員、預約或收費流程。";
-}
-
-
-// ============================================================
-// Candidate 分析
-// ============================================================
-
-async function analyzeCandidate(
-    candidate: {
-        title: string;
-        url: string;
-        description: string;
-        relevanceScore?: number;
-    }
-) {
-
-    try {
-
-        // 二次 Domain 防呆
-        if (
-            isExcludedDomain(
-                candidate.url
-            )
-        ) {
-            return null;
-        }
-
-        const html =
-            await fetchWebsite(
-                candidate.url
-            );
-
-        if (!html) {
-            return null;
-        }
-
-        const websiteText =
-            cleanHtml(
-                html
-            );
-
-        const analysis =
-            analyzeContent(
-                candidate.title,
-                candidate.description,
-                websiteText
-            );
-
-        const platform =
-            detectPlatform(
-                html
-            );
-
-        const brand =
-            detectBrand(
-                html,
-                candidate.url
-            );
-
-
-        // ----------------------------------------------------
-        // 搜尋相關性
-        // ----------------------------------------------------
-
-        const relevance =
-            candidate.relevanceScore ||
-            0;
-
-
-        // ----------------------------------------------------
-        // 明顯內容站
-        // ----------------------------------------------------
-
-        const contentRatio =
-            websiteText.length > 0
-                ? findSignals(
-                    websiteText,
-                    contentSignals
-                ).length
-                : 0;
-
-        if (
-            contentRatio >= 8 &&
-            analysis.paymentScore < 30 &&
-            analysis.merchantScore < 30
-        ) {
-
-            return null;
-        }
-
-
-        // ----------------------------------------------------
-        // Lead Score
-        // ----------------------------------------------------
-
-        let leadScore =
-            analysis.leadScore;
-
-        // 搜尋相關性加權
-        leadScore +=
-            relevance * 0.20;
-
-        // 官網通常比純搜尋頁重要
-        if (
-            websiteText.length > 1000
-        ) {
-
-            leadScore += 5;
-        }
-
-        // 有商品 + 金流
-        if (
-            analysis.merchantScore >= 30 &&
-            analysis.paymentScore >= 30
-        ) {
-
-            leadScore += 8;
-        }
-
-        // 有實體據點
-        if (
-            analysis.hasPhysicalStore
-        ) {
-
-            leadScore += 5;
-        }
-
-        // 合作平台
-        if (
-            cooperationPlatforms.includes(
-                platform.platform
-            )
-        ) {
-
-            leadScore += 12;
-        }
-
-        leadScore =
-            Math.round(
-                Math.max(
-                    0,
-                    Math.min(
-                        100,
-                        leadScore
-                    )
-                )
-            );
-
-
-        // ----------------------------------------------------
-        // 分數太低
-        // ----------------------------------------------------
-
-        if (
-            leadScore < 18
-        ) {
-
-            return null;
-        }
-
-
-        const cooperation =
-            cooperationPlatforms.includes(
-                platform.platform
-            )
-                ? "可合作"
-                : "暫不可合作";
-
-
-        return {
-
-            success:
-                true,
-
-            title:
-                candidate.title,
-
-            url:
-                candidate.url,
-
-            description:
-                candidate.description,
-
-            brand,
-
-            platform:
-                platform.platform,
-
-            cooperation,
-
-            recommendation:
-                getRecommendation(
-                    analysis.paymentScore,
-                    analysis.hasPhysicalStore,
-                    platform.platform
-                ),
-
-            physicalStore: {
-
-                hasPhysicalStore:
-                    analysis.hasPhysicalStore,
-
-                signals:
-                    analysis.physicalSignals,
-            },
-
-            evidence:
-                platform.evidence,
-
-            merchantScore:
-                analysis.merchantScore,
-
-            paymentScore:
-                analysis.paymentScore,
-
-            physicalScore:
-                analysis.physicalScore,
-
-            relevanceScore:
-                relevance,
-
-            leadScore,
-
-            merchantSignals:
-                analysis.merchantSignals,
-
-            paymentSignals:
-                analysis.paymentSignals,
-
-            industrySignals:
-                analysis.industrySignals,
-
-            contentSignals:
-                analysis.contentSignals,
-
-            hasPaymentNeed:
-                analysis.hasPaymentNeed,
-        };
-
-    } catch (error) {
-
-        console.error(
-            "分析網站失敗：",
-            candidate.url,
-            error
-        );
-
-        return null;
-    }
-}
-
-
-// ============================================================
-// Yahoo URL 解碼
-// ============================================================
-
-function decodeYahooUrl(
-    url: string
-) {
-
-    try {
-
-        let decoded =
-            decodeURIComponent(
-                url
-            );
-
-        // Yahoo /RU=
-        const ruIndex =
-            decoded.indexOf(
-                "/RU="
-            );
-
-        if (
-            ruIndex >= 0
-        ) {
-
-            const start =
-                decoded.indexOf(
-                    "http",
-                    ruIndex + 4
-                );
-
-            if (
-                start >= 0
-            ) {
-
-                const endings = [
-                    "/RS",
-                    "/RK",
-                ];
-
-                const positions =
-                    endings
-                        .map(
-                            (ending) =>
-                                decoded.lastIndexOf(
-                                    ending
-                                )
-                        )
-                        .filter(
-                            (position) =>
-                                position >= start
-                        );
-
-                if (
-                    positions.length
-                ) {
-
-                    return decoded.substring(
-                        start,
-                        Math.min(
-                            ...positions
-                        )
-                    );
-                }
-
-                return decoded.substring(
-                    start
-                );
-            }
-        }
-
-        // URL=
-        const match =
-            decoded.match(
-                /(?:RU|URL)=([^&]+)/i
-            );
-
-        if (
-            match?.[1]
-        ) {
-
-            return decodeURIComponent(
-                match[1]
-            );
-        }
-
-        return decoded;
-
-    } catch {
-
-        return url;
-    }
-}
-
-
-// ============================================================
-// 搜尋結果 HTML 解析
-// ============================================================
-
-function parseYahooResults(
-    html: string,
-    query: string
-) {
-
-    const results: {
-        title: string;
-        url: string;
-        description: string;
-        query: string;
-    }[] = [];
-
-
-    // ========================================================
-    // 方案一
-    // Yahoo 新版 algo-sr
-    // ========================================================
-
-    const blocks =
-        html.match(
-            /<div[^>]+class=["'][^"']*\balgo-sr\b[^"']*["'][\s\S]*?<\/div>\s*<\/div>/gi
-        ) || [];
-
-
-    for (
-        const block of blocks
-    ) {
-
-        // h3 a
-        const h3Match =
-            block.match(
-                /<h3[\s\S]*?<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/i
-            );
-
-        // aria-label fallback
-        const ariaMatch =
-            block.match(
-                /<a[^>]+aria-label=["']([^"']+)["'][^>]*>/i
-            );
-
-        if (
-            !h3Match &&
-            !ariaMatch
-        ) {
-            continue;
-        }
-
-        let href =
-            h3Match?.[1] ||
-            "";
-
-        let title =
-            h3Match
-                ? cleanSearchText(
-                    h3Match[2]
-                )
-                : ariaMatch?.[1] || "";
-
-        if (!href) {
-
-            const anyHref =
-                block.match(
-                    /<a[^>]+href=["']([^"']+)["']/i
-                );
-
-            href =
-                anyHref?.[1] ||
-                "";
-        }
-
-        if (!href || !title) {
-            continue;
-        }
-
-        href =
-            decodeYahooUrl(
-                href
-            );
-
-        if (
-            !/^https?:\/\//i.test(
-                href
-            )
-        ) {
-            continue;
-        }
-
-        const descriptionMatch =
-            block.match(
-                /<div[^>]+class=["'][^"']*\bcompText\b[^"']*["'][\s\S]*?<\/div>/i
-            );
-
-        const description =
-            descriptionMatch
-                ? cleanSearchText(
-                    descriptionMatch[0]
-                )
-                : "";
-
-        results.push({
-
-            title,
-
-            url:
-                normalizeUrl(
-                    href
-                ),
-
-            description,
-
-            query,
-        });
-    }
-
-
-    // ========================================================
-    // 方案二
-    // dd algo
-    // ========================================================
-
-    if (
-        results.length === 0
-    ) {
-
-        const blocks2 =
-            html.match(
-                /<div[^>]+class=["'][^"']*\balgo\b[^"']*["'][\s\S]*?<\/div>\s*<\/div>/gi
-            ) || [];
-
-        for (
-            const block of blocks2
-        ) {
-
-            const linkMatch =
-                block.match(
-                    /<h3[\s\S]*?<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/i
-                );
-
-            if (!linkMatch) {
-                continue;
-            }
-
-            let href =
-                linkMatch[1];
-
-            href =
-                decodeYahooUrl(
-                    href
-                );
-
-            if (
-                !/^https?:\/\//i.test(
-                    href
-                )
-            ) {
-                continue;
-            }
-
-            const title =
-                cleanSearchText(
-                    linkMatch[2]
-                );
-
-            const descriptionMatch =
-                block.match(
-                    /<div[^>]+class=["'][^"']*\bcompText\b[^"']*["'][\s\S]*?<\/div>/i
-                );
-
-            const description =
-                descriptionMatch
-                    ? cleanSearchText(
-                        descriptionMatch[0]
-                    )
-                    : "";
-
-            if (!title) {
-                continue;
-            }
-
-            results.push({
-
-                title,
-
-                url:
-                    normalizeUrl(
-                        href
-                    ),
-
-                description,
-
-                query,
-            });
-        }
-    }
-
-
-    // ========================================================
-    // 方案三
-    // 通用 h3
-    // ========================================================
-
-    if (
-        results.length === 0
-    ) {
-
-        const matches =
-            Array.from(
-                html.matchAll(
-                    /<h3[^>]*>[\s\S]*?<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>[\s\S]*?<\/h3>/gi
-                )
-            );
-
-        for (
-            const match of matches
-        ) {
-
-            let href =
-                match[1];
-
-            const title =
-                cleanSearchText(
-                    match[2]
-                );
-
-            href =
-                decodeYahooUrl(
-                    href
-                );
-
-            if (
-                !title ||
-                !/^https?:\/\//i.test(
-                    href
-                )
-            ) {
-                continue;
-            }
-
-            results.push({
-
-                title,
-
-                url:
-                    normalizeUrl(
-                        href
-                    ),
-
-                description:
-                    "",
-
-                query,
-            });
-        }
-    }
-
-
-    // ========================================================
-    // 去重
-    // ========================================================
-
-    const unique =
-        new Map<
-            string,
-            {
-                title: string;
-                url: string;
-                description: string;
-                query: string;
-            }
-        >();
-
-    for (
-        const result of results
-    ) {
-
-        if (
-            !result.url
-        ) {
-            continue;
-        }
-
-        if (
-            isExcludedDomain(
-                result.url
-            )
-        ) {
-            continue;
-        }
-
-        if (
-            !unique.has(
-                result.url
-            )
-        ) {
-
-            unique.set(
-                result.url,
-                result
-            );
-        }
-    }
-
-    return Array.from(
-        unique.values()
-    );
-}
-
-
-// ============================================================
-// Yahoo 搜尋
-//
-// b = 1 / 21 / 41...
-// 每個 query 最多抓 20 筆
-// ============================================================
-
-async function searchQuery(
-    query: string
-) {
-
-    const allResults: {
-        title: string;
-        url: string;
-        description: string;
-        query: string;
-    }[] = [];
-
-
-    // ========================================================
-    // 搜尋第 1 頁
-    // ========================================================
-
-    for (
-        const offset of [1, 21]
-    ) {
-
-        try {
-
-            console.log(
-                "Yahoo 搜尋：",
-                query,
-                "offset:",
-                offset
-            );
-
-            const searchUrl =
-                `https://tw.search.yahoo.com/search?p=${encodeURIComponent(query)}&b=${offset}&n=20`;
-
-            const response =
-                await fetch(
-                    searchUrl,
-                    {
-                        headers: {
-
-                            "User-Agent":
-                                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131 Safari/537.36",
-
-                            Accept:
-                                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-
-                            "Accept-Language":
-                                "zh-TW,zh;q=0.9,en;q=0.8",
-                        },
-
-                        redirect:
-                            "follow",
-
-                        signal:
-                            AbortSignal.timeout(
-                                12000
-                            ),
-                    }
-                );
-
-            if (
-                !response.ok
-            ) {
-
-                console.error(
-                    "Yahoo HTTP Error:",
-                    response.status
-                );
-
-                continue;
-            }
-
-            const html =
-                await response.text();
-
-            const parsed =
-                parseYahooResults(
-                    html,
-                    query
-                );
-
-            allResults.push(
-                ...parsed
-            );
-
-            // Yahoo 被擋 / 沒有結果
-            if (
-                parsed.length === 0
-            ) {
-                break;
-            }
-
-            await sleep(
-                500
-            );
-
-        } catch (error) {
-
-            console.error(
-                "Yahoo 搜尋失敗：",
-                query,
-                error
-            );
-        }
-    }
-
-
-    // ========================================================
-    // 去重
-    // ========================================================
-
-    const unique =
-        new Map<
-            string,
-            {
-                title: string;
-                url: string;
-                description: string;
-                query: string;
-            }
-        >();
-
-    for (
-        const result of allResults
-    ) {
-
-        if (
-            !result.url
-        ) {
-            continue;
-        }
-
-        if (
-            !unique.has(
-                result.url
-            )
-        ) {
-
-            unique.set(
-                result.url,
-                result
-            );
-        }
-    }
-
-    return Array.from(
-        unique.values()
-    );
-}
-
-
-// ============================================================
-// 搜尋結果文字清理
+// Search Text Clean
 // ============================================================
 
 function cleanSearchText(
     value: string
 ) {
 
-    return value
+    return String(
+        value || ""
+    )
 
         .replace(
             /<script[\s\S]*?<\/script>/gi,
@@ -2964,20 +1250,1837 @@ function cleanSearchText(
 
 
 // ============================================================
-// Delay
+// HTML Clean
 // ============================================================
 
-function sleep(
-    ms: number
+function cleanHtml(
+    html: string
 ) {
 
-    return new Promise(
-        (resolve) =>
-            setTimeout(
-                resolve,
-                ms
+    return html
+
+        .replace(
+            /<script[\s\S]*?<\/script>/gi,
+            " "
+        )
+
+        .replace(
+            /<style[\s\S]*?<\/style>/gi,
+            " "
+        )
+
+        .replace(
+            /<noscript[\s\S]*?<\/noscript>/gi,
+            " "
+        )
+
+        .replace(
+            /<svg[\s\S]*?<\/svg>/gi,
+            " "
+        )
+
+        .replace(
+            /<iframe[\s\S]*?<\/iframe>/gi,
+            " "
+        )
+
+        .replace(
+            /<[^>]+>/g,
+            " "
+        )
+
+        .replace(
+            /&nbsp;/gi,
+            " "
+        )
+
+        .replace(
+            /&amp;/gi,
+            "&"
+        )
+
+        .replace(
+            /&quot;/gi,
+            '"'
+        )
+
+        .replace(
+            /&#39;/gi,
+            "'"
+        )
+
+        .replace(
+            /\s+/g,
+            " "
+        )
+
+        .trim();
+}
+
+
+// ============================================================
+// Signals
+// ============================================================
+
+function findSignals(
+    text: string,
+    signals: string[]
+) {
+
+    const lower =
+        text.toLowerCase();
+
+    return signals.filter(
+        (signal) =>
+            lower.includes(
+                signal.toLowerCase()
             )
     );
+}
+
+
+// ============================================================
+// Industry Expansion
+//
+// 這裡解決：
+// 使用者輸入過度廣泛詞時搜尋品質低
+// ============================================================
+
+function expandIndustryKeyword(
+    keyword: string
+) {
+
+    const lower =
+        keyword
+            .trim()
+            .toLowerCase();
+
+
+    if (
+        lower.includes("百貨")
+    ) {
+
+        return [
+            keyword,
+            "百貨公司",
+            "購物中心",
+            "商場",
+        ];
+    }
+
+
+    if (
+        lower.includes("手搖") ||
+        lower.includes("茶飲")
+    ) {
+
+        return [
+            keyword,
+            "手搖飲料",
+            "茶飲品牌",
+            "飲料店",
+        ];
+    }
+
+
+    if (
+        lower.includes("短袖") ||
+        lower.includes("t恤") ||
+        lower.includes("t-shirt")
+    ) {
+
+        return [
+            keyword,
+            "服飾",
+            "T恤",
+            "上衣",
+            "服裝品牌",
+        ];
+    }
+
+
+    if (
+        lower.includes("健身")
+    ) {
+
+        return [
+            keyword,
+            "健身房",
+            "運動中心",
+            "健身品牌",
+        ];
+    }
+
+
+    if (
+        lower.includes("活動票券") ||
+        lower.includes("票券")
+    ) {
+
+        return [
+            keyword,
+            "售票",
+            "活動售票",
+            "展演票券",
+            "表演票券",
+        ];
+    }
+
+
+    if (
+        lower.includes("餐廳") ||
+        lower.includes("餐飲")
+    ) {
+
+        return [
+            keyword,
+            "餐廳",
+            "餐飲品牌",
+        ];
+    }
+
+
+    if (
+        lower.includes("寵物")
+    ) {
+
+        return [
+            keyword,
+            "寵物用品",
+            "寵物品牌",
+            "寵物商店",
+        ];
+    }
+
+
+    if (
+        lower.includes("美容")
+    ) {
+
+        return [
+            keyword,
+            "美容",
+            "美容工作室",
+            "美容品牌",
+        ];
+    }
+
+
+    return [
+        keyword,
+    ];
+}
+
+
+// ============================================================
+// Search Queries
+//
+// 不要 12~20 組亂轟
+// 精準 6~8 組效果反而比較好
+// ============================================================
+
+function getSearchQueries(
+    keyword: string
+) {
+
+    const variants =
+        expandIndustryKeyword(
+            keyword
+        );
+
+
+    const primary =
+        variants[0];
+
+
+    const queries = [
+
+        `${primary} 台灣 官網`,
+
+        `${primary} 台灣 官方網站`,
+
+        `${primary} 台灣 品牌`,
+
+        `${primary} 台灣 門市`,
+
+        `${primary} 台灣 線上購物`,
+
+        `${primary} 台灣 線上訂購`,
+    ];
+
+
+    for (
+        const variant
+        of variants.slice(
+            1,
+            4
+        )
+    ) {
+
+        queries.push(
+            `${variant} 台灣 官網`
+        );
+    }
+
+
+    return queries
+
+        .map(
+            (item) =>
+                item
+                    .replace(
+                        /\s+/g,
+                        " "
+                    )
+                    .trim()
+        )
+
+        .filter(Boolean)
+
+        .filter(
+            (
+                item,
+                index,
+                array
+            ) =>
+                array.indexOf(
+                    item
+                ) === index
+        )
+
+        .slice(
+            0,
+            8
+        );
+}
+
+
+// ============================================================
+// Bad Title
+// ============================================================
+
+function isBadTitle(
+    title: string
+) {
+
+    const lower =
+        title.toLowerCase();
+
+    return excludedTitleSignals.some(
+        (signal) =>
+            lower.includes(
+                signal.toLowerCase()
+            )
+    );
+}
+
+
+// ============================================================
+// Relevance
+// ============================================================
+
+function calculateRelevance(
+    keyword: string,
+    title: string,
+    description: string
+) {
+
+    const keywordLower =
+        keyword
+            .trim()
+            .toLowerCase();
+
+    const titleLower =
+        title
+            .toLowerCase();
+
+    const descriptionLower =
+        description
+            .toLowerCase();
+
+
+    let score = 0;
+
+
+    // ========================================================
+    // Exact Keyword
+    // ========================================================
+
+    if (
+        titleLower.includes(
+            keywordLower
+        )
+    ) {
+
+        score += 45;
+    }
+
+
+    if (
+        descriptionLower.includes(
+            keywordLower
+        )
+    ) {
+
+        score += 25;
+    }
+
+
+    // ========================================================
+    // Industry Expansion
+    // ========================================================
+
+    const variants =
+        expandIndustryKeyword(
+            keyword
+        );
+
+
+    for (
+        const variant
+        of variants
+    ) {
+
+        const lower =
+            variant.toLowerCase();
+
+        if (
+            titleLower.includes(
+                lower
+            )
+        ) {
+
+            score += 18;
+        }
+
+        if (
+            descriptionLower.includes(
+                lower
+            )
+        ) {
+
+            score += 8;
+        }
+    }
+
+
+    // ========================================================
+    // Chinese Bigram
+    // ========================================================
+
+    if (
+        keywordLower.length >= 2
+    ) {
+
+        for (
+            let i = 0;
+            i <
+            keywordLower.length - 1;
+            i++
+        ) {
+
+            const token =
+                keywordLower.slice(
+                    i,
+                    i + 2
+                );
+
+
+            if (
+                titleLower.includes(
+                    token
+                )
+            ) {
+
+                score += 6;
+            }
+
+
+            if (
+                descriptionLower.includes(
+                    token
+                )
+            ) {
+
+                score += 3;
+            }
+        }
+    }
+
+
+    // ========================================================
+    // Official Site Signals
+    // ========================================================
+
+    if (
+        titleLower.includes(
+            "官網"
+        ) ||
+        titleLower.includes(
+            "官方"
+        )
+    ) {
+
+        score += 10;
+    }
+
+
+    return Math.min(
+        100,
+        score
+    );
+}
+
+
+// ============================================================
+// Search Result Qualification
+// ============================================================
+
+function shouldKeepSearchResult(
+    result: SearchResult,
+    keyword: string
+) {
+
+    if (
+        shouldExcludeUrl(
+            result.url
+        )
+    ) {
+
+        return false;
+    }
+
+
+    if (
+        isBadTitle(
+            result.title
+        )
+    ) {
+
+        return false;
+    }
+
+
+    const text =
+        `${result.title} ${result.description}`
+            .toLowerCase();
+
+
+    // ========================================================
+    // Marketplace / Noise
+    // ========================================================
+
+    if (
+        platformNoise.some(
+            (signal) =>
+                text.includes(
+                    signal.toLowerCase()
+                )
+        )
+    ) {
+
+        return false;
+    }
+
+
+    // ========================================================
+    // Content Site
+    // ========================================================
+
+    const contentHits =
+        findSignals(
+            text,
+            contentSignals
+        );
+
+
+    if (
+        contentHits.length >= 3
+    ) {
+
+        return false;
+    }
+
+
+    // ========================================================
+    // Relevance
+    // ========================================================
+
+    const relevance =
+        calculateRelevance(
+            keyword,
+            result.title,
+            result.description
+        );
+
+
+    if (
+        relevance < 15
+    ) {
+
+        return false;
+    }
+
+
+    return true;
+}
+
+
+// ============================================================
+// DDG Search
+// ============================================================
+
+async function searchDuckDuckGo(
+    query: string
+): Promise<SearchResult[]> {
+
+    // ========================================================
+    // Cache
+    // ========================================================
+
+    const cache =
+        searchCache.get(
+            query
+        );
+
+
+    if (
+        cache &&
+        Date.now() -
+        cache.time <
+        CACHE_TTL
+    ) {
+
+        console.log(
+            "🟢 Search Cache：",
+            query,
+            cache.results.length
+        );
+
+        return cache.results;
+    }
+
+
+    const ddgs =
+        new DDGS({
+            timeout:
+                12000,
+        });
+
+
+    // ========================================================
+    // 第一輪
+    // backend auto
+    // ========================================================
+
+    try {
+
+        console.log(
+            "🔎 DDG Search：",
+            query
+        );
+
+
+        const results =
+            await ddgs.text({
+
+                keywords:
+                    query,
+
+                region:
+                    "wt-wt",
+
+                safesearch:
+                    "moderate",
+
+                backend:
+                    "auto",
+
+                maxResults:
+                    15,
+            });
+
+
+        const parsed:
+            SearchResult[] =
+            (Array.isArray(results)
+                ? results
+                : []
+            )
+
+                .map(
+                    (item: any) => {
+
+                        const url =
+                            normalizeUrl(
+                                String(
+                                    item?.href ||
+                                    item?.url ||
+                                    ""
+                                )
+                            );
+
+
+                        return {
+
+                            title:
+                                cleanSearchText(
+                                    String(
+                                        item?.title ||
+                                        ""
+                                    )
+                                ),
+
+                            url,
+
+                            description:
+                                cleanSearchText(
+                                    String(
+                                        item?.body ||
+                                        item?.description ||
+                                        ""
+                                    )
+                                ),
+
+                            query,
+
+                            source:
+                                "DuckDuckGo",
+                        };
+                    }
+                )
+
+                .filter(
+                    (item) =>
+                        item.url &&
+                        item.title
+                );
+
+
+        if (
+            parsed.length > 0
+        ) {
+
+            searchCache.set(
+                query,
+                {
+                    time:
+                        Date.now(),
+
+                    results:
+                        parsed,
+                }
+            );
+
+
+            console.log(
+                "✅ DDG Results：",
+                query,
+                parsed.length
+            );
+
+
+            return parsed;
+        }
+
+    } catch (error) {
+
+        console.log(
+            "⚠️ DDG auto failed：",
+            query
+        );
+    }
+
+
+    // ========================================================
+    // 第二輪
+    // HTML backend fallback
+    // ========================================================
+
+    try {
+
+        await sleep(
+            900
+        );
+
+
+        console.log(
+            "🔄 DDG HTML fallback：",
+            query
+        );
+
+
+        const results =
+            await ddgs.text({
+
+                keywords:
+                    query,
+
+                region:
+                    "wt-wt",
+
+                safesearch:
+                    "moderate",
+
+                backend:
+                    "html",
+
+                maxResults:
+                    15,
+            });
+
+
+        const parsed:
+            SearchResult[] =
+            (Array.isArray(results)
+                ? results
+                : []
+            )
+
+                .map(
+                    (item: any) => {
+
+                        const url =
+                            normalizeUrl(
+                                String(
+                                    item?.href ||
+                                    item?.url ||
+                                    ""
+                                )
+                            );
+
+
+                        return {
+
+                            title:
+                                cleanSearchText(
+                                    String(
+                                        item?.title ||
+                                        ""
+                                    )
+                                ),
+
+                            url,
+
+                            description:
+                                cleanSearchText(
+                                    String(
+                                        item?.body ||
+                                        item?.description ||
+                                        ""
+                                    )
+                                ),
+
+                            query,
+
+                            source:
+                                "DuckDuckGo HTML",
+                        };
+                    }
+                )
+
+                .filter(
+                    (item) =>
+                        item.url &&
+                        item.title
+                );
+
+
+        if (
+            parsed.length > 0
+        ) {
+
+            searchCache.set(
+                query,
+                {
+                    time:
+                        Date.now(),
+
+                    results:
+                        parsed,
+                }
+            );
+        }
+
+
+        console.log(
+            "✅ DDG HTML Results：",
+            query,
+            parsed.length
+        );
+
+
+        return parsed;
+
+    } catch {
+
+        console.log(
+            "❌ DDG 搜尋失敗：",
+            query
+        );
+
+
+        return [];
+    }
+}
+
+
+// ============================================================
+// Search Query
+//
+// 每組只打 DDG
+// 不再浪費時間打 Yahoo 500
+// ============================================================
+
+async function searchQuery(
+    query: string
+) {
+
+    return await searchDuckDuckGo(
+        query
+    );
+}
+
+
+// ============================================================
+// Fetch Website Headers
+// ============================================================
+
+const browserHeaders = {
+
+    "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
+
+    Accept:
+        "text/html,application/xhtml+xml",
+
+    "Accept-Language":
+        "zh-TW,zh;q=0.9,en;q=0.8",
+};
+
+
+// ============================================================
+// Fetch Website
+// ============================================================
+
+async function fetchWebsite(
+    url: string
+) {
+
+    try {
+
+        const response =
+            await fetch(
+                url,
+                {
+
+                    headers:
+                        browserHeaders,
+
+                    redirect:
+                        "follow",
+
+                    cache:
+                        "no-store",
+
+                    signal:
+                        AbortSignal.timeout(
+                            8000
+                        ),
+                }
+            );
+
+
+        if (
+            !response.ok
+        ) {
+
+            return "";
+        }
+
+
+        const contentType =
+            response.headers.get(
+                "content-type"
+            ) || "";
+
+
+        if (
+            !contentType.includes(
+                "text/html"
+            )
+        ) {
+
+            return "";
+        }
+
+
+        const html =
+            await response.text();
+
+
+        // 避免網站超大
+        return html.slice(
+            0,
+            2_000_000
+        );
+
+    } catch {
+
+        return "";
+    }
+}
+
+
+// ============================================================
+// Taiwan Score
+// ============================================================
+
+function calculateTaiwanScore(
+    url: string,
+    text: string
+) {
+
+    let score = 0;
+
+
+    const hostname =
+        getHostname(
+            url
+        );
+
+
+    if (
+        hostname.endsWith(
+            ".tw"
+        )
+    ) {
+
+        score += 35;
+    }
+
+
+    const lower =
+        text.toLowerCase();
+
+
+    const hits =
+        taiwanSignals.filter(
+            (signal) =>
+                lower.includes(
+                    signal.toLowerCase()
+                )
+        );
+
+
+    score +=
+        Math.min(
+            40,
+            hits.length * 8
+        );
+
+
+    // 台灣電話
+    if (
+        /(?:02|03|04|05|06|07|08)[-\s]?\d{6,8}/.test(
+            text
+        )
+    ) {
+
+        score += 10;
+    }
+
+
+    // 台灣統編常見文字
+    if (
+        lower.includes(
+            "統一編號"
+        )
+    ) {
+
+        score += 10;
+    }
+
+
+    return Math.min(
+        100,
+        score
+    );
+}
+
+
+// ============================================================
+// Website Analysis
+// ============================================================
+
+function analyzeContent(
+    text: string
+) {
+
+    const merchantFound =
+        findSignals(
+            text,
+            merchantSignals
+        );
+
+
+    const strongFound =
+        findSignals(
+            text,
+            strongMerchantSignals
+        );
+
+
+    const paymentFound =
+        findSignals(
+            text,
+            paymentSignals
+        );
+
+
+    const physicalFound =
+        findSignals(
+            text,
+            physicalSignals
+        );
+
+
+    const contentFound =
+        findSignals(
+            text,
+            contentSignals
+        );
+
+
+    // ========================================================
+    // Merchant Score
+    // ========================================================
+
+    let merchantScore =
+        merchantFound.length * 5;
+
+
+    merchantScore +=
+        strongFound.length * 10;
+
+
+    // ========================================================
+    // Payment Score
+    // ========================================================
+
+    let paymentScore =
+        paymentFound.length * 8;
+
+
+    // ========================================================
+    // Physical Score
+    // ========================================================
+
+    let physicalScore =
+        physicalFound.length * 8;
+
+
+    merchantScore =
+        Math.min(
+            100,
+            merchantScore
+        );
+
+
+    paymentScore =
+        Math.min(
+            100,
+            paymentScore
+        );
+
+
+    physicalScore =
+        Math.min(
+            100,
+            physicalScore
+        );
+
+
+    // ========================================================
+    // Merchant Qualification
+    // ========================================================
+
+    const isMerchant =
+
+        strongFound.length >= 1 ||
+
+        merchantFound.length >= 4 ||
+
+        (
+            merchantFound.length >= 2 &&
+            paymentFound.length >= 1
+        ) ||
+
+        (
+            merchantFound.length >= 2 &&
+            physicalFound.length >= 2
+        );
+
+
+    // ========================================================
+    // Content Site Qualification
+    // ========================================================
+
+    const isContentSite =
+
+        (
+            contentFound.length >= 7 &&
+            strongFound.length === 0
+        )
+
+        ||
+
+        (
+            contentFound.length >= 5 &&
+            merchantFound.length <= 2
+        );
+
+
+    // ========================================================
+    // Lead
+    // ========================================================
+
+    let leadScore =
+
+        merchantScore *
+        0.45 +
+
+        paymentScore *
+        0.35 +
+
+        physicalScore *
+        0.20;
+
+
+    leadScore -=
+        contentFound.length * 2;
+
+
+    if (
+        strongFound.length >= 2
+    ) {
+
+        leadScore += 8;
+    }
+
+
+    leadScore =
+        Math.max(
+            0,
+            Math.min(
+                100,
+                Math.round(
+                    leadScore
+                )
+            )
+        );
+
+
+    return {
+
+        merchantScore,
+
+        paymentScore,
+
+        physicalScore,
+
+        leadScore,
+
+        merchantSignals:
+            merchantFound.slice(
+                0,
+                15
+            ),
+
+        strongMerchantSignals:
+            strongFound.slice(
+                0,
+                10
+            ),
+
+        paymentSignals:
+            paymentFound.slice(
+                0,
+                15
+            ),
+
+        physicalSignals:
+            physicalFound.slice(
+                0,
+                15
+            ),
+
+        contentSignals:
+            contentFound.slice(
+                0,
+                10
+            ),
+
+        hasPhysicalStore:
+            physicalFound.length >= 2,
+
+        hasPaymentNeed:
+            paymentFound.length >= 1,
+
+        isMerchant,
+
+        isContentSite,
+    };
+}
+
+
+// ============================================================
+// Detect Platform
+// ============================================================
+
+function detectPlatform(
+    html: string
+): PlatformResult {
+
+    const lower =
+        html.toLowerCase();
+
+
+    const ranked =
+        fingerprints
+
+            .map(
+                (fingerprint) => {
+
+                    const evidence =
+                        fingerprint
+                            .keywords
+                            .filter(
+                                (keyword) =>
+                                    lower.includes(
+                                        keyword.toLowerCase()
+                                    )
+                            );
+
+
+                    return {
+
+                        platform:
+                            fingerprint.name,
+
+                        evidence,
+
+                        score:
+                            evidence.length,
+                    };
+                }
+            )
+
+            .sort(
+                (a, b) =>
+                    b.score -
+                    a.score
+            );
+
+
+    const best =
+        ranked[0];
+
+
+    if (
+        !best ||
+        best.score === 0
+    ) {
+
+        return {
+
+            platform:
+                "Unknown",
+
+            evidence:
+                [],
+        };
+    }
+
+
+    return {
+
+        platform:
+            best.platform,
+
+        evidence:
+            best.evidence,
+    };
+}
+
+
+// ============================================================
+// Detect Brand
+// ============================================================
+
+function detectBrand(
+    html: string,
+    url: string
+) {
+
+    const og =
+        html.match(
+            /<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']/i
+        );
+
+
+    if (
+        og?.[1]
+    ) {
+
+        return cleanSearchText(
+            og[1]
+        );
+    }
+
+
+    const title =
+        html.match(
+            /<title[^>]*>([\s\S]*?)<\/title>/i
+        );
+
+
+    if (
+        title?.[1]
+    ) {
+
+        return cleanSearchText(
+            title[1]
+        )
+
+            .replace(
+                /\s*[|｜]\s*.*$/,
+                ""
+            )
+
+            .trim();
+    }
+
+
+    return (
+        getHostname(
+            url
+        )
+            .split(
+                "."
+            )[0]
+        ||
+        "未知品牌"
+    );
+}
+
+
+// ============================================================
+// Recommendation
+// ============================================================
+
+function getRecommendation(
+    paymentScore: number,
+    hasPhysicalStore: boolean,
+    platform: string
+) {
+
+    const cooperative =
+        cooperationPlatforms.includes(
+            platform
+        );
+
+
+    if (
+        cooperative &&
+        paymentScore >= 35 &&
+        hasPhysicalStore
+    ) {
+
+        return "已辨識為可合作開店平台，且具有線上交易與實體據點訊號，建議優先評估 EC＋POS。";
+    }
+
+
+    if (
+        cooperative
+    ) {
+
+        return "已辨識為可合作開店平台，建議優先確認目前金流狀況與全支付導入機會。";
+    }
+
+
+    if (
+        paymentScore >= 45 &&
+        hasPhysicalStore
+    ) {
+
+        return "同時具有線上交易及實體據點需求，建議評估 EC 金流與 POS 合作。";
+    }
+
+
+    if (
+        paymentScore >= 35
+    ) {
+
+        return "網站具有明確線上交易／付款需求，可優先評估全支付線上金流。";
+    }
+
+
+    if (
+        hasPhysicalStore
+    ) {
+
+        return "具有實體門市／據點，可進一步確認 POS 或門市支付需求。";
+    }
+
+
+    return "具有商戶特徵，可進一步確認付款、會員、預約或交易流程。";
+}
+
+
+// ============================================================
+// Candidate Analysis
+// ============================================================
+
+async function analyzeCandidate(
+    candidate: Candidate,
+    keyword: string
+) {
+
+    try {
+
+        const rootUrl =
+            getRootUrl(
+                candidate.url
+            );
+
+
+        if (
+            !rootUrl ||
+            isExcludedDomain(
+                rootUrl
+            )
+        ) {
+
+            return null;
+        }
+
+
+        const html =
+            await fetchWebsite(
+                rootUrl
+            );
+
+
+        if (!html) {
+
+            return null;
+        }
+
+
+        const websiteText =
+            cleanHtml(
+                html
+            );
+
+
+        if (
+            websiteText.length < 150
+        ) {
+
+            return null;
+        }
+
+
+        // ====================================================
+        // Taiwan
+        // ====================================================
+
+        const taiwanScore =
+            calculateTaiwanScore(
+                rootUrl,
+                websiteText
+            );
+
+
+        // 明確海外網站不要
+        const hostname =
+            getHostname(
+                rootUrl
+            );
+
+
+        if (
+            foreignTlds.some(
+                (tld) =>
+                    hostname.endsWith(
+                        tld
+                    )
+            )
+        ) {
+
+            return null;
+        }
+
+
+        // ====================================================
+        // Website Analysis
+        // ====================================================
+
+        const analysis =
+            analyzeContent(
+                websiteText
+            );
+
+
+        if (
+            !analysis.isMerchant
+        ) {
+
+            return null;
+        }
+
+
+        if (
+            analysis.isContentSite
+        ) {
+
+            return null;
+        }
+
+
+        // ====================================================
+        // Website Keyword Relevance
+        // ====================================================
+
+        const websiteLower =
+            websiteText.toLowerCase();
+
+
+        const variants =
+            expandIndustryKeyword(
+                keyword
+            );
+
+
+        let websiteRelevance =
+            0;
+
+
+        for (
+            const variant
+            of variants
+        ) {
+
+            if (
+                websiteLower.includes(
+                    variant.toLowerCase()
+                )
+            ) {
+
+                websiteRelevance += 12;
+            }
+        }
+
+
+        websiteRelevance =
+            Math.min(
+                40,
+                websiteRelevance
+            );
+
+
+        // 搜尋結果 + 官網都完全無關
+        if (
+            candidate.relevanceScore < 20 &&
+            websiteRelevance === 0
+        ) {
+
+            return null;
+        }
+
+
+        // ====================================================
+        // Platform
+        // ====================================================
+
+        const platform =
+            detectPlatform(
+                html
+            );
+
+
+        const brand =
+            detectBrand(
+                html,
+                rootUrl
+            );
+
+
+        // ====================================================
+        // Final Lead
+        // ====================================================
+
+        let leadScore =
+            analysis.leadScore;
+
+
+        // 搜尋相關
+        leadScore +=
+            candidate.relevanceScore *
+            0.18;
+
+
+        // 官網產業相關
+        leadScore +=
+            websiteRelevance *
+            0.30;
+
+
+        // 多組搜尋詞都找到
+        leadScore +=
+            Math.min(
+                10,
+                candidate.appearanceCount *
+                2
+            );
+
+
+        // 台灣
+        leadScore +=
+            taiwanScore *
+            0.08;
+
+
+        // 合作平台
+        if (
+            cooperationPlatforms.includes(
+                platform.platform
+            )
+        ) {
+
+            leadScore += 15;
+        }
+
+
+        // POS
+        if (
+            analysis.hasPhysicalStore
+        ) {
+
+            leadScore += 5;
+        }
+
+
+        leadScore =
+            Math.round(
+                Math.max(
+                    0,
+                    Math.min(
+                        100,
+                        leadScore
+                    )
+                )
+            );
+
+
+        if (
+            leadScore < 25
+        ) {
+
+            return null;
+        }
+
+
+        const cooperation =
+            cooperationPlatforms.includes(
+                platform.platform
+            )
+                ? "可合作"
+                : "暫不可合作";
+
+
+        return {
+
+            success:
+                true,
+
+            title:
+                candidate.title,
+
+            brand,
+
+            url:
+                rootUrl,
+
+            description:
+                candidate.description,
+
+            platform:
+                platform.platform,
+
+            cooperation,
+
+            recommendation:
+                getRecommendation(
+                    analysis.paymentScore,
+                    analysis.hasPhysicalStore,
+                    platform.platform
+                ),
+
+            physicalStore: {
+
+                hasPhysicalStore:
+                    analysis.hasPhysicalStore,
+
+                signals:
+                    analysis.physicalSignals,
+            },
+
+            evidence:
+                platform.evidence,
+
+            merchantScore:
+                analysis.merchantScore,
+
+            paymentScore:
+                analysis.paymentScore,
+
+            physicalScore:
+                analysis.physicalScore,
+
+            relevanceScore:
+                candidate.relevanceScore,
+
+            appearanceCount:
+                candidate.appearanceCount,
+
+            taiwanScore,
+
+            websiteRelevance,
+
+            leadScore,
+
+            merchantSignals:
+                analysis.merchantSignals,
+
+            strongMerchantSignals:
+                analysis.strongMerchantSignals,
+
+            paymentSignals:
+                analysis.paymentSignals,
+
+            contentSignals:
+                analysis.contentSignals,
+
+            hasPaymentNeed:
+                analysis.hasPaymentNeed,
+        };
+
+    } catch {
+
+        return null;
+    }
 }
 
 
@@ -2994,21 +3097,34 @@ export async function POST(
         const body =
             await req.json();
 
+
         const keyword =
             String(
-                body?.keyword || ""
-            ).trim();
+                body?.keyword ||
+                ""
+            )
+                .trim();
+
 
         if (!keyword) {
 
-            return NextResponse.json({
+            return NextResponse.json(
+                {
 
-                success:
-                    false,
+                    success:
+                        false,
 
-                error:
-                    "請輸入搜尋關鍵字",
-            });
+                    error:
+                        "請輸入搜尋關鍵字",
+
+                    results:
+                        [],
+                },
+                {
+                    status:
+                        400,
+                }
+            );
         }
 
 
@@ -3016,9 +3132,11 @@ export async function POST(
             "===================================="
         );
 
+
         console.log(
-            "PayLead Finder v2"
+            "PayLead Finder v5"
         );
+
 
         console.log(
             "搜尋產業：",
@@ -3026,32 +3144,25 @@ export async function POST(
         );
 
 
+        console.log(
+            "搜尋引擎：DuckDuckGo Search"
+        );
+
+
+        console.log(
+            "OpenAI：停用"
+        );
+
+
         // ====================================================
-        // Query
+        // Queries
         // ====================================================
 
-        const allQueries =
-            await generateAIQueries(
+        const queries =
+            getSearchQueries(
                 keyword
             );
 
-        const queries =
-            allQueries
-                .filter(Boolean)
-                .filter(
-                    (
-                        query,
-                        index,
-                        array
-                    ) =>
-                        array.indexOf(
-                            query
-                        ) === index
-                )
-                .slice(
-                    0,
-                    12
-                );
 
         console.log(
             "搜尋詞：",
@@ -3060,14 +3171,20 @@ export async function POST(
 
 
         // ====================================================
-        // 搜尋
+        // Search
+        //
+        // 循序
+        // 避免 DDG rate limit
         // ====================================================
 
-        const rawResults: any[] =
+        const rawResults:
+            SearchResult[] =
             [];
 
+
         for (
-            const query of queries
+            const query
+            of queries
         ) {
 
             const results =
@@ -3075,13 +3192,31 @@ export async function POST(
                     query
                 );
 
+
+            console.log(
+                "Query：",
+                query,
+                "→",
+                results.length
+            );
+
+
             rawResults.push(
                 ...results
             );
 
-            // 搜尋引擎保護
+
+            // 已經很多就不再打
+            if (
+                rawResults.length >= 100
+            ) {
+
+                break;
+            }
+
+
             await sleep(
-                1200
+                650
             );
         }
 
@@ -3093,124 +3228,185 @@ export async function POST(
 
 
         // ====================================================
-        // 候選池
+        // Search Filter
+        // ====================================================
+
+        const filtered =
+            rawResults.filter(
+                (result) =>
+                    shouldKeepSearchResult(
+                        result,
+                        keyword
+                    )
+            );
+
+
+        console.log(
+            "Search Filter 後：",
+            filtered.length
+        );
+
+
+        // ====================================================
+        // Candidate Map
         //
-        // 先不要太早砍
+        // 同 domain 整合
+        // appearanceCount 很重要
+        //
+        // 同網站被不同 query 找到
+        // 代表它更可能是真的相關商戶
         // ====================================================
 
         const candidateMap =
             new Map<
                 string,
-                {
-                    title: string;
-                    url: string;
-                    description: string;
-                    query: string;
-                    relevanceScore: number;
-                }
+                Candidate
             >();
 
+
         for (
-            const result of rawResults
+            const result
+            of filtered
         ) {
 
-            if (
-                !result?.url
-            ) {
-                continue;
-            }
-
-            if (
-                !shouldKeepSearchResult(
-                    result
-                )
-            ) {
-
-                continue;
-            }
-
-            const normalized =
-                normalizeUrl(
+            const rootUrl =
+                getRootUrl(
                     result.url
                 );
 
+
             if (
+                !rootUrl ||
                 isExcludedDomain(
-                    normalized
+                    rootUrl
                 )
             ) {
+
                 continue;
             }
 
-            const relevance =
-                calculateQueryRelevance(
-                    keyword,
-                    result.query || "",
-                    result.title || "",
-                    result.description || ""
+
+            const hostname =
+                getHostname(
+                    rootUrl
                 );
 
 
-            // 完全無關的結果直接淘汰
-            if (
-                relevance < 10
-            ) {
+            if (!hostname) {
+
                 continue;
             }
+
+
+            const relevance =
+                calculateRelevance(
+                    keyword,
+                    result.title,
+                    result.description
+                );
 
 
             const existing =
                 candidateMap.get(
-                    normalized
+                    hostname
                 );
+
 
             if (!existing) {
 
                 candidateMap.set(
-                    normalized,
+                    hostname,
                     {
 
                         ...result,
 
                         url:
-                            normalized,
+                            rootUrl,
 
                         relevanceScore:
                             relevance,
+
+                        appearanceCount:
+                            1,
                     }
                 );
 
-            } else {
+                continue;
+            }
 
-                // 同一網站如果被不同搜尋詞找到
-                // 保留最高相關性
+
+            existing.appearanceCount +=
+                1;
+
+
+            // 保留相關性最高的 title / description
+            if (
+                relevance >
+                existing.relevanceScore
+            ) {
+
+                existing.title =
+                    result.title;
+
+                existing.description =
+                    result.description;
+
+                existing.query =
+                    result.query;
+
                 existing.relevanceScore =
-                    Math.max(
-                        existing.relevanceScore,
-                        relevance
-                    );
+                    relevance;
             }
         }
 
 
         // ====================================================
-        // 候選排序
-        //
-        // 搜尋相關性高的先分析
+        // Candidate Sort
         // ====================================================
 
         const candidates =
             Array.from(
                 candidateMap.values()
             )
+
                 .sort(
-                    (a, b) =>
-                        b.relevanceScore -
-                        a.relevanceScore
+                    (
+                        a,
+                        b
+                    ) => {
+
+                        const scoreA =
+
+                            a.relevanceScore +
+
+                            Math.min(
+                                20,
+                                a.appearanceCount *
+                                4
+                            );
+
+
+                        const scoreB =
+
+                            b.relevanceScore +
+
+                            Math.min(
+                                20,
+                                b.appearanceCount *
+                                4
+                            );
+
+
+                        return (
+                            scoreB -
+                            scoreA
+                        );
+                    }
                 )
+
                 .slice(
                     0,
-                    80
+                    60
                 );
 
 
@@ -3221,17 +3417,20 @@ export async function POST(
 
 
         // ====================================================
-        // 分析網站
+        // Analyze
         //
         // 每批 5 筆
         // ====================================================
 
-        const results: any[] =
+        const results:
+            any[] =
             [];
+
 
         for (
             let i = 0;
-            i < candidates.length;
+            i <
+            candidates.length;
             i += 5
         ) {
 
@@ -3241,65 +3440,96 @@ export async function POST(
                     i + 5
                 );
 
-            const batchResults =
+
+            const analyzed =
                 await Promise.all(
                     batch.map(
-                        (
-                            candidate
-                        ) =>
+                        (candidate) =>
                             analyzeCandidate(
-                                candidate
+                                candidate,
+                                keyword
                             )
                     )
                 );
 
-            results.push(
-                ...batchResults.filter(
-                    Boolean
-                )
+
+            for (
+                const result
+                of analyzed
+            ) {
+
+                if (
+                    result
+                ) {
+
+                    results.push(
+                        result
+                    );
+                }
+            }
+
+
+            console.log(
+                "目前有效商戶：",
+                results.length
             );
 
+
+            // 已經足夠
+            if (
+                results.length >= 35
+            ) {
+
+                break;
+            }
+
+
             await sleep(
-                250
+                150
             );
         }
 
 
         // ====================================================
-        // 最終排序
+        // Final Sort
         //
-        // 1. 合作平台
-        // 2. Lead Score
-        // 3. 搜尋相關性
+        // 1. Cooperation
+        // 2. Lead
+        // 3. Appearance
+        // 4. Relevance
         // ====================================================
 
         results.sort(
-            (a, b) => {
+            (
+                a,
+                b
+            ) => {
 
-                const aPlatform =
-                    cooperationPlatforms.includes(
-                        a.platform
-                    )
+                const cooperationA =
+                    a.cooperation ===
+                    "可合作"
                         ? 1
                         : 0;
 
-                const bPlatform =
-                    cooperationPlatforms.includes(
-                        b.platform
-                    )
+
+                const cooperationB =
+                    b.cooperation ===
+                    "可合作"
                         ? 1
                         : 0;
+
 
                 if (
-                    aPlatform !==
-                    bPlatform
+                    cooperationA !==
+                    cooperationB
                 ) {
 
                     return (
-                        bPlatform -
-                        aPlatform
+                        cooperationB -
+                        cooperationA
                     );
                 }
+
 
                 if (
                     b.leadScore !==
@@ -3312,16 +3542,29 @@ export async function POST(
                     );
                 }
 
+
+                if (
+                    b.appearanceCount !==
+                    a.appearanceCount
+                ) {
+
+                    return (
+                        b.appearanceCount -
+                        a.appearanceCount
+                    );
+                }
+
+
                 return (
-                    (b.relevanceScore || 0) -
-                    (a.relevanceScore || 0)
+                    b.relevanceScore -
+                    a.relevanceScore
                 );
             }
         );
 
 
         // ====================================================
-        // 最終 30
+        // Final 30
         // ====================================================
 
         const finalResults =
@@ -3332,18 +3575,25 @@ export async function POST(
 
 
         console.log(
+            "===================================="
+        );
+
+
+        console.log(
             "最終結果：",
             finalResults.length
         );
 
+
         console.log(
-            "合作平台結果：",
+            "合作平台：",
             finalResults.filter(
                 (item) =>
                     item.cooperation ===
                     "可合作"
             ).length
         );
+
 
         console.log(
             "===================================="
@@ -3361,6 +3611,12 @@ export async function POST(
 
             keyword,
 
+            searchEngine:
+                "DuckDuckGo",
+
+            openAI:
+                false,
+
             queryCount:
                 queries.length,
 
@@ -3369,6 +3625,9 @@ export async function POST(
 
             rawCount:
                 rawResults.length,
+
+            filteredCount:
+                filtered.length,
 
             candidateCount:
                 candidates.length,
@@ -3383,6 +3642,7 @@ export async function POST(
                 finalResults,
         });
 
+
     } catch (error) {
 
         console.error(
@@ -3390,8 +3650,8 @@ export async function POST(
             error
         );
 
-        return NextResponse.json(
 
+        return NextResponse.json(
             {
 
                 success:
@@ -3401,9 +3661,12 @@ export async function POST(
                     error instanceof Error
                         ? error.message
                         : "搜尋發生錯誤",
-            },
 
+                results:
+                    [],
+            },
             {
+
                 status:
                     500,
             }
