@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
-import { DDGS } from "@phukon/duckduckgo-search";
 
 // ============================================================
 // PayLead Finder
 // 一般商戶搜尋 API
+//
+// 搜尋引擎：Yahoo Search HTML
 //
 // 核心邏輯
 // 1. 最多 8 組搜尋詞
@@ -13,7 +14,7 @@ import { DDGS } from "@phukon/duckduckgo-search";
 // 5. 最多分析 40 個候選網站
 // 6. 最終輸出 30 筆
 // 7. 合作平台優先排序
-// 8. DDG 循序搜尋，避免 202 Ratelimit
+// 8. 搜尋請求循序執行，避免搜尋引擎 Ratelimit
 // ============================================================
 
 
@@ -263,9 +264,6 @@ const excludedDomains = [
 
 // ============================================================
 // 明確排除的網域
-//
-// 這些不一定是「內容網站」
-// 但對你的 B2B 開發名單價值很低
 // ============================================================
 
 const hardExcludedDomains = [
@@ -367,7 +365,6 @@ const excludedTitleSignals = [
     "help center",
     "help centre",
     "support",
-    "documentation",
 
     // 評論
     "評論",
@@ -1415,21 +1412,6 @@ function detectBrand(
 
 // ============================================================
 // 固定搜尋策略
-//
-// 核心改動：
-//
-// 最多 8 組
-//
-// 不再搜尋：
-// QDM
-// EasyStore
-// WACA
-// GoGoShop
-// 開店123
-//
-// 改搜尋：
-//
-// 產業 + 商業行為
 // ============================================================
 
 function getFallbackQueries(
@@ -1492,8 +1474,7 @@ function getFallbackQueries(
 // ============================================================
 // AI 搜尋策略
 //
-// AI 最多產生 8 組
-// 同樣不能加入平台名稱
+// 沒有 OPENAI_API_KEY 時直接使用固定搜尋策略
 // ============================================================
 
 async function generateAIQueries(
@@ -1590,21 +1571,7 @@ Support
 不要加入地區名稱。
 
 請只輸出 JSON array。
-
-例如：
-
-[
-  "${keyword} 線上購物 商品",
-  "${keyword} 線上訂購 付款",
-  "${keyword} 購物車 結帳",
-  "${keyword} 線上付款",
-  "${keyword} 線上預約 收費",
-  "${keyword} 會員 註冊",
-  "${keyword} 門市 分店",
-  "${keyword} 商品 售價"
-]
 `;
-
 
     try {
 
@@ -1656,7 +1623,6 @@ Support
                 }
             );
 
-
         if (
             !response.ok
         ) {
@@ -1666,16 +1632,13 @@ Support
             );
         }
 
-
         const data =
             await response.json();
-
 
         const content =
             data?.choices?.[0]
                 ?.message
                 ?.content;
-
 
         if (
             typeof content !==
@@ -1686,7 +1649,6 @@ Support
                 "OpenAI 沒有回傳內容"
             );
         }
-
 
         const parsed =
             JSON.parse(
@@ -1705,7 +1667,6 @@ Support
                     .trim()
             );
 
-
         if (
             !Array.isArray(
                 parsed
@@ -1713,10 +1674,9 @@ Support
         ) {
 
             throw new Error(
-                "AI 格式錯誤"
+                "OpenAI 格式錯誤"
             );
         }
-
 
         const forbiddenPlatformWords = [
 
@@ -1734,7 +1694,6 @@ Support
             "cyberbiz",
             "meepshop",
         ];
-
 
         const aiQueries =
             parsed
@@ -1785,7 +1744,6 @@ Support
                     8
                 );
 
-
         if (
             aiQueries.length ===
             0
@@ -1793,7 +1751,6 @@ Support
 
             return fallback;
         }
-
 
         return aiQueries;
 
@@ -1904,7 +1861,6 @@ function shouldKeepSearchResult(
                 )
         );
 
-
     if (
         contentHits.length >= 3
     ) {
@@ -1923,13 +1879,11 @@ function shouldKeepSearchResult(
             merchantSignals
         );
 
-
     const paymentHits =
         findSignals(
             text,
             paymentSignals
         );
-
 
     const industryHits =
         findSignals(
@@ -1940,7 +1894,6 @@ function shouldKeepSearchResult(
 
     // --------------------------------------------------------
     // 沒有任何商業訊號
-    // 就不要進候選
     // --------------------------------------------------------
 
     return (
@@ -1970,7 +1923,6 @@ function getRecommendation(
             platform
         );
 
-
     if (
         isCooperationPlatform &&
         paymentScore >= 40 &&
@@ -1980,7 +1932,6 @@ function getRecommendation(
         return "已辨識為可合作開店平台，且具明確交易與實體據點需求，建議同步評估線上金流與 POS。";
     }
 
-
     if (
         isCooperationPlatform &&
         paymentScore >= 40
@@ -1988,7 +1939,6 @@ function getRecommendation(
 
         return "已辨識為可合作開店平台，且具有明確交易或付款需求，建議優先評估線上金流合作。";
     }
-
 
     if (
         paymentScore >= 50 &&
@@ -1998,7 +1948,6 @@ function getRecommendation(
         return "具明確交易／金流需求，且有實體門市或據點線索，建議同步評估線上金流與 POS。";
     }
 
-
     if (
         paymentScore >= 50
     ) {
@@ -2006,14 +1955,12 @@ function getRecommendation(
         return "具明確線上交易或付款需求，建議優先評估全支付線上金流。";
     }
 
-
     if (
         hasPhysicalStore
     ) {
 
         return "網站具有實體門市或據點線索，可進一步確認是否有 POS 金流需求。";
     }
-
 
     return "具有一定商業交易潛力，可進一步確認付款、會員、預約或收費流程。";
 }
@@ -2038,12 +1985,10 @@ async function analyzeCandidate(
                 candidate.url
             );
 
-
         const websiteText =
             html
                 ? cleanHtml(html)
                 : "";
-
 
         const analysis =
             analyzeContent(
@@ -2052,12 +1997,10 @@ async function analyzeCandidate(
                 websiteText
             );
 
-
         const platform =
             detectPlatform(
                 html
             );
-
 
         const brand =
             html
@@ -2089,7 +2032,6 @@ async function analyzeCandidate(
                 ? "可合作"
                 : "暫不可合作";
 
-
         return {
 
             success:
@@ -2108,10 +2050,6 @@ async function analyzeCandidate(
 
             platform:
                 platform.platform,
-
-            // 注意：
-            // confidence 已經不回傳
-            // 前端也不應再顯示
 
             cooperation,
 
@@ -2176,69 +2114,373 @@ async function analyzeCandidate(
 
 
 // ============================================================
-// DDG 搜尋
+// Yahoo 搜尋
+//
+// 不需要 API Key
+// 不需要付費
 // ============================================================
 
 async function searchQuery(
-    ddgs: DDGS,
     query: string
 ) {
 
     try {
 
         console.log(
-            "DDG 搜尋：",
+            "Yahoo 搜尋：",
             query
         );
 
+        const searchUrl =
+            `https://search.yahoo.com/search?p=${encodeURIComponent(query)}`;
 
-        const results =
-            await ddgs.text({
+        const response =
+            await fetch(
+                searchUrl,
+                {
+                    headers: {
 
-                keywords:
-                    query,
+                        "User-Agent":
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131 Safari/537.36",
 
-                maxResults:
-                    10,
+                        "Accept":
+                            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+
+                        "Accept-Language":
+                            "zh-TW,zh;q=0.9,en;q=0.8",
+                    },
+
+                    redirect:
+                        "follow",
+
+                    signal:
+                        AbortSignal.timeout(
+                            10000
+                        ),
+                }
+            );
+
+        if (
+            !response.ok
+        ) {
+
+            console.error(
+                "Yahoo 搜尋 HTTP Error：",
+                response.status
+            );
+
+            return [];
+        }
+
+        const html =
+            await response.text();
+
+        const results: {
+            title: string;
+            url: string;
+            description: string;
+            query: string;
+        }[] = [];
+
+
+        // ----------------------------------------------------
+        // Yahoo 一般搜尋結果
+        // ----------------------------------------------------
+
+        const blocks =
+            html.match(
+                /<div[^>]+class=["'][^"']*\balgo\b[^"']*["'][\s\S]*?<\/div>\s*<\/div>/gi
+            ) || [];
+
+
+        for (
+            const block of blocks
+        ) {
+
+            const linkMatch =
+                block.match(
+                    /<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/i
+                );
+
+            if (
+                !linkMatch
+            ) {
+                continue;
+            }
+
+            let href =
+                linkMatch[1];
+
+            const title =
+                cleanSearchText(
+                    linkMatch[2]
+                );
+
+            if (
+                !href ||
+                !title
+            ) {
+                continue;
+            }
+
+            href =
+                decodeYahooUrl(
+                    href
+                );
+
+            if (
+                !/^https?:\/\//i.test(
+                    href
+                )
+            ) {
+                continue;
+            }
+
+            const descriptionMatch =
+                block.match(
+                    /<p[^>]*>([\s\S]*?)<\/p>/i
+                );
+
+            const description =
+                descriptionMatch
+                    ? cleanSearchText(
+                        descriptionMatch[1]
+                    )
+                    : "";
+
+            results.push({
+
+                title,
+
+                url:
+                    normalizeUrl(
+                        href
+                    ),
+
+                description,
+
+                query,
             });
+        }
 
 
-        return results
+        // ----------------------------------------------------
+        // Yahoo HTML 結構 fallback
+        // ----------------------------------------------------
 
-            .filter(
-                (item: any) =>
-                    item?.href
-            )
+        if (
+            results.length === 0
+        ) {
 
-            .map(
-                (item: any) => ({
+            const linkMatches =
+                Array.from(
+                    html.matchAll(
+                        /<a[^>]+href=["'](https?:\/\/[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi
+                    )
+                );
 
-                    title:
-                        item.title ||
-                        "未知網站",
+            for (
+                const match of linkMatches
+            ) {
+
+                const href =
+                    match[1];
+
+                const title =
+                    cleanSearchText(
+                        match[2]
+                    );
+
+                if (
+                    !title ||
+                    !href
+                ) {
+                    continue;
+                }
+
+                if (
+                    isExcludedDomain(
+                        href
+                    )
+                ) {
+                    continue;
+                }
+
+                results.push({
+
+                    title,
 
                     url:
                         normalizeUrl(
-                            item.href
+                            href
                         ),
 
                     description:
-                        item.body ||
                         "",
 
                     query,
-                })
-            );
+                });
+
+                if (
+                    results.length >= 10
+                ) {
+                    break;
+                }
+            }
+        }
+
+
+        // ----------------------------------------------------
+        // URL 去重
+        // ----------------------------------------------------
+
+        const unique =
+            new Map<
+                string,
+                {
+                    title: string;
+                    url: string;
+                    description: string;
+                    query: string;
+                }
+            >();
+
+        for (
+            const result of results
+        ) {
+
+            if (
+                !result.url
+            ) {
+                continue;
+            }
+
+            if (
+                !unique.has(
+                    result.url
+                )
+            ) {
+
+                unique.set(
+                    result.url,
+                    result
+                );
+            }
+        }
+
+        return Array.from(
+            unique.values()
+        ).slice(
+            0,
+            10
+        );
 
     } catch (error) {
 
         console.error(
-            "DDG 搜尋失敗：",
+            "Yahoo 搜尋失敗：",
             query,
             error
         );
 
         return [];
+    }
+}
+
+
+// ============================================================
+// 搜尋結果文字清理
+// ============================================================
+
+function cleanSearchText(
+    value: string
+) {
+
+    return value
+
+        .replace(
+            /<script[\s\S]*?<\/script>/gi,
+            " "
+        )
+
+        .replace(
+            /<style[\s\S]*?<\/style>/gi,
+            " "
+        )
+
+        .replace(
+            /<[^>]+>/g,
+            " "
+        )
+
+        .replace(
+            /&nbsp;/gi,
+            " "
+        )
+
+        .replace(
+            /&amp;/gi,
+            "&"
+        )
+
+        .replace(
+            /&quot;/gi,
+            '"'
+        )
+
+        .replace(
+            /&#39;/gi,
+            "'"
+        )
+
+        .replace(
+            /&#x27;/gi,
+            "'"
+        )
+
+        .replace(
+            /\s+/g,
+            " "
+        )
+
+        .trim();
+}
+
+
+// ============================================================
+// Yahoo Redirect URL 解碼
+// ============================================================
+
+function decodeYahooUrl(
+    url: string
+) {
+
+    try {
+
+        const decoded =
+            decodeURIComponent(
+                url
+            );
+
+        const match =
+            decoded.match(
+                /(?:RU|URL)=([^&]+)/i
+            );
+
+        if (
+            match?.[1]
+        ) {
+
+            return decodeURIComponent(
+                match[1]
+            );
+        }
+
+        return decoded;
+
+    } catch {
+
+        return url;
     }
 }
 
@@ -2274,12 +2516,10 @@ export async function POST(
         const body =
             await req.json();
 
-
         const keyword =
             String(
                 body?.keyword || ""
             ).trim();
-
 
         if (!keyword) {
 
@@ -2310,15 +2550,12 @@ export async function POST(
 
         // ====================================================
         // 產生搜尋詞
-        //
-        // 強制最多 8 組
         // ====================================================
 
         const allQueries =
             await generateAIQueries(
                 keyword
             );
-
 
         const queries =
             allQueries
@@ -2341,26 +2578,18 @@ export async function POST(
                     8
                 );
 
-
         console.log(
             "搜尋詞：",
             queries
         );
 
 
-        const ddgs =
-            new DDGS();
-
+        // ====================================================
+        // 搜尋
+        // ====================================================
 
         const rawResults: any[] =
             [];
-
-
-        // ====================================================
-        // DDG 循序搜尋
-        //
-        // 最多 8 組
-        // ====================================================
 
         for (
             const query of queries
@@ -2368,19 +2597,16 @@ export async function POST(
 
             const results =
                 await searchQuery(
-                    ddgs,
                     query
                 );
-
 
             rawResults.push(
                 ...results
             );
 
-
-            // DDG Ratelimit 保護
+            // 搜尋引擎 Ratelimit 保護
             await sleep(
-                350
+                800
             );
         }
 
@@ -2406,7 +2632,6 @@ export async function POST(
                 }
             >();
 
-
         for (
             const result of rawResults
         ) {
@@ -2417,7 +2642,6 @@ export async function POST(
                 continue;
             }
 
-
             if (
                 !shouldKeepSearchResult(
                     result
@@ -2427,12 +2651,10 @@ export async function POST(
                 continue;
             }
 
-
             const normalized =
                 normalizeUrl(
                     result.url
                 );
-
 
             if (
                 !uniqueMap.has(
@@ -2466,7 +2688,6 @@ export async function POST(
                 40
             );
 
-
         console.log(
             "候選網站：",
             candidates.length
@@ -2482,7 +2703,6 @@ export async function POST(
         const results: any[] =
             [];
 
-
         for (
             let i = 0;
             i < candidates.length;
@@ -2494,7 +2714,6 @@ export async function POST(
                     i,
                     i + 5
                 );
-
 
             const batchResults =
                 await Promise.all(
@@ -2508,13 +2727,11 @@ export async function POST(
                     )
                 );
 
-
             results.push(
                 ...batchResults.filter(
                     Boolean
                 )
             );
-
 
             await sleep(
                 200
@@ -2539,14 +2756,12 @@ export async function POST(
                         ? 1
                         : 0;
 
-
                 const bPlatform =
                     cooperationPlatforms.includes(
                         b.platform
                     )
                         ? 1
                         : 0;
-
 
                 if (
                     aPlatform !==
@@ -2558,7 +2773,6 @@ export async function POST(
                         aPlatform
                     );
                 }
-
 
                 return (
                     b.leadScore -
@@ -2578,12 +2792,10 @@ export async function POST(
                 30
             );
 
-
         console.log(
             "最終結果：",
             finalResults.length
         );
-
 
         console.log(
             "合作平台結果：",
@@ -2593,7 +2805,6 @@ export async function POST(
                     "可合作"
             ).length
         );
-
 
         console.log(
             "===================================="
@@ -2624,14 +2835,12 @@ export async function POST(
                 finalResults,
         });
 
-
     } catch (error) {
 
         console.error(
             "Search API Error:",
             error
         );
-
 
         return NextResponse.json(
 
