@@ -22,15 +22,6 @@ type CharityResult = {
     methods?: string[];
   };
 
-  fundraising?: {
-    hasFundraisingInfo?: boolean;
-    signals?: string[];
-  };
-
-  fundraisingNumber?: string;
-  fundraisingNo?: string;
-  solicitationNumber?: string;
-
   development?: {
     ec?: boolean;
     pos?: boolean;
@@ -265,15 +256,16 @@ export default function CharityDevelopment() {
   // 線上捐款
   // ============================================================
 
-function hasOnlineDonation(
-  item: CharityResult
-) {
-  return (
-    item.donation?.online === true ||
-    item.donation?.hasOnlineDonation === true ||
-    item.onlineDonation === true
-  );
-}
+  function hasOnlineDonation(
+    item: CharityResult
+  ) {
+    return (
+      item.donation?.online === true ||
+      item.donation
+        ?.hasOnlineDonation === true ||
+      item.onlineDonation === true
+    );
+  }
 
   // ============================================================
   // 定期捐款
@@ -295,41 +287,13 @@ function hasOnlineDonation(
   // ============================================================
 
   function hasPhysicalStore(
-  item: CharityResult
-) {
-  return (
-    item.physicalStore?.hasPhysicalStore === true ||
-    item.hasPhysicalStore === true ||
-    !!item.address
-  );
-}
-
-  // ============================================================
-  // 勸募資訊
-  // ============================================================
-
-  function getFundraisingNumber(
     item: CharityResult
   ) {
     return (
-      item.fundraisingNumber ||
-      item.fundraisingNo ||
-      item.solicitationNumber ||
-      item["勸募字號"] ||
-      item["勸募核准文號"] ||
-      item["勸募許可字號"] ||
-      ""
-    );
-  }
-
-  function hasFundraising(
-    item: CharityResult
-  ) {
-    return (
-      item.fundraising
-        ?.hasFundraisingInfo ===
-        true ||
-      !!getFundraisingNumber(item)
+      item.physicalStore
+        ?.hasPhysicalStore === true ||
+      item.hasPhysicalStore === true ||
+      !!item.address
     );
   }
 
@@ -408,9 +372,6 @@ function hasOnlineDonation(
     const physical =
       hasPhysicalStore(item);
 
-    const fundraising =
-      hasFundraising(item);
-
     if (donation) {
       recommendations.push(
         "網站已有線上捐款需求，可優先洽談 EC／APP 捐款金流合作。"
@@ -429,12 +390,6 @@ function hasOnlineDonation(
       );
     }
 
-    if (fundraising) {
-      recommendations.push(
-        "網站具有公益勸募資訊，可進一步確認 APP 捐款專區合作資格。"
-      );
-    }
-
     if (
       recommendations.length === 0
     ) {
@@ -448,9 +403,6 @@ function hasOnlineDonation(
 
   // ============================================================
   // Excel 匯出
-  //
-  // 不需要勾選
-  // 直接匯出目前所有結果
   // ============================================================
 
   function exportExcel() {
@@ -470,7 +422,6 @@ function hasOnlineDonation(
       "實體據點",
       "Payment Score",
       "Physical Score",
-      "勸募字號",
       "開發建議",
     ];
 
@@ -497,10 +448,6 @@ function hasOnlineDonation(
 
           getPhysicalScore(item),
 
-          getFundraisingNumber(
-            item
-          ) || "未取得",
-
           getRecommendation(item),
         ];
       });
@@ -526,7 +473,6 @@ function hasOnlineDonation(
       )
       .join("\n");
 
-    // UTF-8 BOM
     const blob =
       new Blob(
         [
@@ -577,9 +523,7 @@ function hasOnlineDonation(
   return (
     <section className="space-y-6">
 
-      {/* ======================================================
-          Header
-      ====================================================== */}
+      {/* Header */}
 
       <div className="bg-white rounded-2xl shadow-sm p-6">
 
@@ -606,9 +550,7 @@ function hasOnlineDonation(
       </div>
 
 
-      {/* ======================================================
-          Mode
-      ====================================================== */}
+      {/* Mode */}
 
       <div className="bg-white rounded-2xl shadow-sm p-2">
 
@@ -639,7 +581,7 @@ function hasOnlineDonation(
                 : "bg-white text-gray-600 rounded-xl px-5 py-4 font-medium hover:bg-gray-50"
             }
           >
-            🌐 分析公益組織
+            🌐 分析公益網站
           </button>
 
         </div>
@@ -647,9 +589,7 @@ function hasOnlineDonation(
       </div>
 
 
-      {/* ======================================================
-          Search
-      ====================================================== */}
+      {/* Search */}
 
       {mode === "search" && (
 
@@ -734,9 +674,7 @@ function hasOnlineDonation(
       )}
 
 
-      {/* ======================================================
-          Analyze
-      ====================================================== */}
+      {/* Analyze */}
 
       {mode === "analyze" && (
 
@@ -747,7 +685,7 @@ function hasOnlineDonation(
           </h3>
 
           <p className="text-gray-500 text-sm mt-1">
-            輸入公益組織網站，自動分析線上捐款、實體據點與勸募資訊
+            輸入公益組織網站，自動分析線上捐款與實體據點
           </p>
 
           <div className="mt-5 flex flex-col md:flex-row gap-3">
@@ -785,9 +723,7 @@ function hasOnlineDonation(
       )}
 
 
-      {/* ======================================================
-          Error
-      ====================================================== */}
+      {/* Error */}
 
       {error && (
 
@@ -798,14 +734,11 @@ function hasOnlineDonation(
       )}
 
 
-      {/* ======================================================
-          Results
-      ====================================================== */}
+      {/* Results */}
 
       {results.length > 0 && (
 
         <div className="space-y-4">
-
 
           {/* Results Header */}
 
@@ -824,9 +757,7 @@ function hasOnlineDonation(
             </div>
 
 
-            {/* =================================================
-                Excel
-            ================================================= */}
+            {/* Excel */}
 
             <button
               onClick={
@@ -840,9 +771,7 @@ function hasOnlineDonation(
           </div>
 
 
-          {/* ==================================================
-              Cards
-          ================================================== */}
+          {/* Cards */}
 
           {results.map(
             (item, index) => {
@@ -871,14 +800,6 @@ function hasOnlineDonation(
                   item
                 );
 
-              const fundraisingNumber =
-                getFundraisingNumber(
-                  item
-                );
-
-              const fundraising =
-                hasFundraising(item);
-
               const paymentScore =
                 getPaymentScore(item);
 
@@ -900,10 +821,7 @@ function hasOnlineDonation(
                   className="bg-white rounded-2xl shadow-sm border p-6 hover:shadow-md transition"
                 >
 
-
-                  {/* =================================================
-                      Top
-                  ================================================= */}
+                  {/* Top */}
 
                   <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
 
@@ -912,7 +830,6 @@ function hasOnlineDonation(
                       <h4 className="text-xl font-bold">
                         {name}
                       </h4>
-
 
                       {website && (
 
@@ -929,7 +846,6 @@ function hasOnlineDonation(
 
                       )}
 
-
                       {/* 類別 */}
 
                       <div className="mt-2">
@@ -943,16 +859,7 @@ function hasOnlineDonation(
                     </div>
 
 
-                    {/* =================================================
-                        右上角合作標籤
-                        
-                        只有：
-                        💳 線上捐款
-                        🏪 實體據點
-                        
-                        沒有勸募
-                        沒有 ECPOSAPP
-                    ================================================= */}
+                    {/* 右上角合作標籤 */}
 
                     <div className="flex flex-wrap gap-2 shrink-0">
 
@@ -977,16 +884,11 @@ function hasOnlineDonation(
                   </div>
 
 
-                  {/* =================================================
-                      三大合作切入點
-                  ================================================= */}
+                  {/* 兩大合作切入點 */}
 
-                  <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-3">
 
-
-                    {/* =================================================
-                        線上捐款
-                    ================================================= */}
+                    {/* 線上捐款 */}
 
                     <div className="border rounded-xl p-4">
 
@@ -1002,7 +904,6 @@ function hasOnlineDonation(
 
                       </p>
 
-
                       <div className="mt-3">
 
                         <span className="text-sm font-medium">
@@ -1015,7 +916,6 @@ function hasOnlineDonation(
 
                       </div>
 
-
                       {onlineDonation && (
 
                         <p className="text-xs text-green-600 font-bold mt-2">
@@ -1023,7 +923,6 @@ function hasOnlineDonation(
                         </p>
 
                       )}
-
 
                       {recurring && (
 
@@ -1036,9 +935,7 @@ function hasOnlineDonation(
                     </div>
 
 
-                    {/* =================================================
-                        實體據點
-                    ================================================= */}
+                    {/* 實體據點 */}
 
                     <div className="border rounded-xl p-4">
 
@@ -1054,7 +951,6 @@ function hasOnlineDonation(
 
                       </p>
 
-
                       <div className="mt-3">
 
                         <span className="text-sm font-medium">
@@ -1067,53 +963,7 @@ function hasOnlineDonation(
 
                       </div>
 
-
                       {physicalStore && (
-
-                        <p className="text-xs text-green-600 font-bold mt-2">
-                          ✓ 可作為合作切入點
-                        </p>
-
-                      )}
-
-                    </div>
-
-
-                    {/* =================================================
-                        勸募
-                    ================================================= */}
-
-                    <div className="border rounded-xl p-4">
-
-                      <p className="text-xs text-gray-400">
-                        勸募資訊
-                      </p>
-
-                      <p className="font-bold mt-2">
-
-                        {fundraisingNumber
-                          ? fundraisingNumber
-                          : "未發現"}
-
-                      </p>
-
-
-                      <div className="mt-3">
-
-                        <span className="text-sm font-medium">
-                          勸募字號：
-                        </span>
-
-                        <span className="text-sm font-bold">
-                          {fundraising
-                            ? "已取得"
-                            : "未取得"}
-                        </span>
-
-                      </div>
-
-
-                      {fundraising && (
 
                         <p className="text-xs text-green-600 font-bold mt-2">
                           ✓ 可作為合作切入點
@@ -1126,9 +976,7 @@ function hasOnlineDonation(
                   </div>
 
 
-                  {/* =================================================
-                      Contact
-                  ================================================= */}
+                  {/* Contact */}
 
                   {(item.phone ||
                     item.address) && (
@@ -1158,9 +1006,7 @@ function hasOnlineDonation(
                   )}
 
 
-                  {/* =================================================
-                      Recommendation
-                  ================================================= */}
+                  {/* Recommendation */}
 
                   <div className="mt-5 bg-gray-50 rounded-xl p-4">
 
@@ -1177,9 +1023,7 @@ function hasOnlineDonation(
                   </div>
 
 
-                  {/* =================================================
-                      Evidence
-                  ================================================= */}
+                  {/* Evidence */}
 
                   {Array.isArray(
                     item.evidence
