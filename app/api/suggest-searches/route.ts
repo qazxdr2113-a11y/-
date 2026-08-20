@@ -128,7 +128,7 @@ ${previousSuggestions.join("、") || "無"}
                 method: "POST",
 
                 headers: {
-                    "Content-Type": "application/json",
+                    "Content-Type": "ㄑapplication/json",
                     Authorization: `Bearer ${apiKey}`,
                 },
 

@@ -1,26 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
 
-// ============================================================
-// 公益搜尋 API
-// 台灣公益組織 / 動物 / 動保
-//
-// 設計原則
-// 1. 不使用 Yahoo
-// 2. 搜尋引擎失敗不影響 API
-// 3. 強制台灣網站驗證
-// 4. 排除日本、美國及海外組織
-// 5. 保留台灣公益組織 Seed，避免搜尋引擎掛掉時 0 筆
-// 6. 所有 fetch 都有 timeout
-// ============================================================
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+export const maxDuration = 60;
 
 // ============================================================
-// Type
+// Charity Search v4
+// Government open data + website analysis
+//
+// Goals
+// 1. Tavily = 0
+// 2. OpenAI = 0
+// 3. Government rosters provide breadth even when MOHW registry is unavailable.
+// 4. Organizations without a website are still returned as leads.
+// 5. Known official websites are analyzed for donation / recurring donation.
+// 6. Keep response fields compatible with CharityDevelopment.tsx.
 // ============================================================
 
 type DonationResult = {
     online: boolean;
+    hasOnlineDonation: boolean;
     recurring: boolean;
+    hasRecurringDonation: boolean;
     methods: string[];
+    signals: string[];
 };
 
 type PhysicalResult = {
@@ -30,2618 +33,1494 @@ type PhysicalResult = {
 
 type FundraisingResult = {
     hasFundraisingInfo: boolean;
+    number: string;
     signals: string[];
-    number?: string;
 };
 
-type CharityAnalysis = {
-    organizationName: string;
-    url: string;
+type GovernmentEntry = {
+    name: string;
+    address: string;
+    type: string;
+    source: string;
+    established?: string;
+    chairman?: string;
+    score?: number;
+};
 
+type SeedEntry = {
+    name: string;
+    website: string;
     categories: string[];
+    keywords: string[];
+    phone?: string;
+    address?: string;
+};
 
+type CharityResult = {
+    success: true;
+    type: "charity";
+    organizationName: string;
+    name: string;
+    url: string;
+    website: string;
+    category: string;
+    categories: string[];
+    orgType: string;
+    phone: string;
+    address: string;
     donation: DonationResult;
-
+    onlineDonation: boolean;
+    recurringDonation: boolean;
     physicalStore: PhysicalResult;
-
+    hasPhysicalStore: boolean;
     fundraising: FundraisingResult;
-
-    fullPay: {
-        hasFullPay: boolean;
-        signals: string[];
-    };
-
+    fundraisingNumber: string;
     paymentScore: number;
     physicalScore: number;
     confidence: number;
-
+    priority: "高" | "中" | "低";
     cooperation: string[];
-
     recommendation: string;
-
     evidence: string[];
+    fullPay: {
+        hasFullPay: boolean;
+        signals: string[];
+        excludeFromSearch: boolean;
+    };
+    governmentSource: string;
+    governmentMatchScore: number;
+    websiteFetchSuccess: boolean;
 };
 
 // ============================================================
-// 台灣公益分類
+// Tunables
 // ============================================================
 
-const charityCategories = [
+const FINAL_LIMIT = 30;
+const GOVERNMENT_CANDIDATE_LIMIT = 80;
+const WEBSITE_ANALYZE_LIMIT = 18;
+const WEBSITE_BATCH_SIZE = 6;
+const GOVERNMENT_CACHE_TTL = 12 * 60 * 60 * 1000;
+const WEBSITE_CACHE_TTL = 60 * 60 * 1000;
+
+// Ministry of the Interior / Government Open Data platform resources.
+// These URLs are the CSV resources behind data.gov.tw datasets.
+const ASSOCIATION_CSV_URL =
+    "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/DA99D92C-531A-40B2-AFF6-D5C1C7AEE022/resource/6CD84A67-522B-4811-96B8-3E7942AE3C1B/download";
+
+const FOUNDATION_CSV_URL =
+    "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/470F5551-E9B0-48A8-929C-F5395BFA4978/resource/F70DDD2B-4B3B-4AEA-8A91-7203808147EF/download";
+
+// ============================================================
+// Category Profiles
+// ============================================================
+
+type CategoryProfile = {
+    name: string;
+    triggers: string[];
+    searchTerms: string[];
+    strongNameSignals: string[];
+    negativeNameSignals?: string[];
+};
+
+const categoryProfiles: CategoryProfile[] = [
     {
         name: "動物／流浪動物",
-        keywords: [
-            "動物",
-            "流浪動物",
-            "犬",
-            "貓",
-            "毛孩",
-            "寵物",
-            "動保",
+        triggers: ["動物", "動物保護", "動保", "流浪動物", "流浪犬", "流浪貓", "犬貓", "毛孩", "寵物"],
+        searchTerms: [
             "動物保護",
-            "animal",
-            "dog",
-            "cat",
-            "pet"
-        ]
+            "保護動物",
+            "愛護動物",
+            "流浪動物",
+            "流浪犬",
+            "流浪貓",
+            "犬貓",
+            "動物福利",
+            "動物救援",
+            "動物關懷",
+            "野生動物",
+        ],
+        strongNameSignals: [
+            "保護動物",
+            "動物保護",
+            "愛護動物",
+            "流浪動物",
+            "流浪犬",
+            "流浪貓",
+            "犬貓",
+            "動物福利",
+            "動物救援",
+            "動物關懷",
+            "野生動物保護",
+        ],
+        negativeNameSignals: [
+            "獸醫師公會",
+            "獸醫學會",
+            "畜牧",
+            "養殖",
+            "寵物商業",
+            "寵物產業",
+            "寵物美容",
+            "寵物食品",
+            "寵物用品商業",
+            "犬種俱樂部",
+            "犬協會",
+            "貓協會",
+        ],
     },
-
     {
         name: "失智／認知障礙",
-        keywords: [
-            "失智",
-            "認知障礙",
-            "阿茲海默",
-            "失智症",
-            "長照",
-            "dementia",
-            "alzheimer"
-        ]
+        triggers: ["失智", "失智照護", "認知障礙", "阿茲海默", "長照"],
+        searchTerms: ["失智", "認知障礙", "阿茲海默", "失智照護", "失智症"],
+        strongNameSignals: ["失智", "阿茲海默", "認知障礙"],
     },
-
     {
         name: "長者／老人福利",
-        keywords: [
-            "老人",
-            "長者",
-            "高齡",
-            "銀髮",
-            "老人福利",
-            "長輩",
-            "elderly",
-            "senior"
-        ]
+        triggers: ["老人", "老人照護", "長者", "高齡", "銀髮", "老人福利"],
+        searchTerms: ["老人", "長者", "高齡", "銀髮", "老人福利", "長者照護"],
+        strongNameSignals: ["老人福利", "老人", "長者", "高齡", "銀髮"],
     },
-
     {
         name: "兒童／青少年",
-        keywords: [
-            "兒童",
-            "孩童",
-            "青少年",
-            "少年",
-            "兒少",
-            "弱勢兒童",
-            "兒少福利",
-            "child",
-            "children",
-            "youth"
-        ]
+        triggers: ["兒童", "兒少", "兒少福利", "青少年", "弱勢兒童", "孩子"],
+        searchTerms: ["兒童", "兒少", "兒童福利", "青少年", "弱勢兒童", "兒童關懷"],
+        strongNameSignals: ["兒童福利", "兒童", "兒少", "青少年", "孩子"],
     },
-
     {
         name: "身心障礙",
-        keywords: [
-            "身心障礙",
-            "身障",
-            "障礙",
-            "智能障礙",
-            "視障",
-            "聽障",
-            "肢體障礙",
-            "身障者",
-            "disability"
-        ]
+        triggers: ["身心障礙", "身障", "視障", "聽障", "智能障礙", "障礙服務"],
+        searchTerms: ["身心障礙", "身障", "視障", "聽障", "智能障礙", "障礙者"],
+        strongNameSignals: ["身心障礙", "身障", "視障", "聽障", "智能障礙"],
     },
-
     {
         name: "醫療／疾病",
-        keywords: [
-            "醫療",
-            "疾病",
-            "癌症",
-            "罕見疾病",
-            "病友",
-            "醫院",
-            "健康",
-            "醫學",
-            "醫療照護",
-            "medical",
-            "cancer",
-            "health"
-        ]
+        triggers: ["癌症", "癌症醫療", "罕見疾病", "病友", "醫療公益", "疾病"],
+        searchTerms: ["癌症", "罕見疾病", "病友", "醫療", "疾病", "健康關懷"],
+        strongNameSignals: ["癌症", "罕見疾病", "病友", "醫療", "疾病"],
+        negativeNameSignals: ["醫師公會", "醫學會", "醫療產業", "醫療器材"],
     },
-
     {
         name: "教育",
-        keywords: [
-            "教育",
-            "助學",
-            "獎學金",
-            "學童",
-            "學生",
-            "偏鄉教育",
-            "教育基金",
-            "教育公益",
-            "education",
-            "scholarship"
-        ]
+        triggers: ["教育公益", "助學", "偏鄉教育", "兒童教育", "獎學金", "教育"],
+        searchTerms: ["助學", "偏鄉教育", "教育公益", "獎學金", "弱勢學生", "教育關懷"],
+        strongNameSignals: ["助學", "偏鄉教育", "教育基金", "弱勢教育", "獎學"],
     },
-
     {
         name: "環境／生態",
-        keywords: [
-            "環境",
-            "生態",
-            "保育",
-            "自然",
-            "海洋",
-            "森林",
-            "氣候",
-            "環保",
-            "環境保護",
-            "environment",
-            "ecology",
-            "conservation"
-        ]
+        triggers: ["環境保育", "環境", "生態", "保育", "海洋", "森林", "環保"],
+        searchTerms: ["環境保護", "環境保育", "生態保育", "海洋保育", "森林保育", "自然保育"],
+        strongNameSignals: ["環境保護", "環境保育", "生態", "保育", "海洋", "森林"],
     },
-
-    {
-        name: "社會福利",
-        keywords: [
-            "社會福利",
-            "弱勢",
-            "社福",
-            "貧困",
-            "弱勢家庭",
-            "社會救助",
-            "公益",
-            "社會關懷",
-            "social welfare"
-        ]
-    },
-
-    {
-        name: "災害救助",
-        keywords: [
-            "災害",
-            "救災",
-            "災民",
-            "賑災",
-            "地震",
-            "颱風",
-            "水災",
-            "災區",
-            "disaster",
-            "relief"
-        ]
-    },
-
-    {
-        name: "國際援助",
-        keywords: [
-            "國際援助",
-            "海外援助",
-            "國際救援",
-            "難民",
-            "人道援助",
-            "international",
-            "humanitarian",
-            "refugee"
-        ]
-    },
-
     {
         name: "婦女／家庭",
-        keywords: [
-            "婦女",
-            "女性",
-            "家庭",
-            "單親",
-            "家暴",
-            "性別",
-            "女性權益",
-            "women",
-            "family"
-        ]
+        triggers: ["婦女", "婦女福利", "女性", "家庭", "單親", "家暴"],
+        searchTerms: ["婦女", "女性權益", "家庭扶助", "單親", "家暴", "婦幼"],
+        strongNameSignals: ["婦女", "女性", "婦幼", "家庭扶助", "家暴"],
     },
-
-    {
-        name: "青少年／青年培力",
-        keywords: [
-            "青年",
-            "青年培力",
-            "青年發展",
-            "青少年培力",
-            "teen",
-            "teenager"
-        ]
-    },
-
     {
         name: "心理健康",
-        keywords: [
-            "心理",
-            "心理健康",
-            "心理支持",
-            "心理諮商",
-            "精神健康",
-            "mental health",
-            "mental"
-        ]
-    }
+        triggers: ["心理健康", "心理", "心理支持", "精神健康", "心理諮商"],
+        searchTerms: ["心理健康", "心理支持", "精神健康", "心理關懷", "自殺防治"],
+        strongNameSignals: ["心理健康", "心理", "精神健康", "心理關懷"],
+    },
+    {
+        name: "社會福利",
+        triggers: ["弱勢扶助", "社會福利", "社福", "弱勢", "公益", "公益募款", "慈善"],
+        searchTerms: ["社會福利", "弱勢", "慈善", "公益", "關懷", "扶助", "救助"],
+        strongNameSignals: ["社會福利", "慈善", "公益", "弱勢", "關懷", "扶助", "救助"],
+    },
+];
+
+const genericCharityNameSignals = [
+    "慈善",
+    "公益",
+    "福利",
+    "關懷",
+    "扶助",
+    "救助",
+    "救援",
+    "保護",
+    "基金會",
+    "協會",
+    "促進會",
+    "服務協會",
+];
+
+const genericNonLeadSignals = [
+    "同業公會",
+    "商業同業",
+    "工業同業",
+    "職業工會",
+    "產業協會",
+    "企業協會",
+    "校友會",
+    "宗親會",
+    "聯誼會",
+    "商會",
+    "學術學會",
 ];
 
 // ============================================================
-// 台灣動保 Seed
+// Known official websites
 //
-// 這個非常重要。
-// 即使搜尋引擎掛掉，仍然可以找到基本台灣動保組織。
+// These do NOT replace government data. They let high-value known NGOs
+// enter website analysis immediately, while government rosters provide breadth.
 // ============================================================
 
-const taiwanAnimalSeeds = [
-    "https://www.apatw.org",
-    "https://www.savedogs.org",
-    "https://www.animalspark.org.tw",
-    "https://www.hsapf.org.tw",
-    "https://www.kitanimals.org",
-    "https://www.animalstaiwan.org",
+const websiteSeeds: SeedEntry[] = [
+    // Animal
+    {
+        name: "社團法人台灣之心愛護動物協會",
+        website: "https://www.hotac.org.tw",
+        categories: ["動物／流浪動物"],
+        keywords: ["動物", "動保", "流浪動物", "犬貓", "絕育"],
+    },
+    {
+        name: "社團法人台灣防止虐待動物協會",
+        website: "https://www.spca.org.tw",
+        categories: ["動物／流浪動物"],
+        keywords: ["動物", "動保", "虐待動物", "動物福利"],
+    },
+    {
+        name: "社團法人中華民國保護動物協會",
+        website: "https://www.apatw.org",
+        categories: ["動物／流浪動物"],
+        keywords: ["動物", "動保", "保護動物", "流浪動物"],
+    },
+    {
+        name: "社團法人台灣動物社會研究會",
+        website: "https://www.east.org.tw",
+        categories: ["動物／流浪動物", "環境／生態"],
+        keywords: ["動物", "動保", "動物福利", "動物保護", "保育"],
+    },
+    {
+        name: "社團法人中華民國關懷生命協會",
+        website: "https://www.lca.org.tw",
+        categories: ["動物／流浪動物"],
+        keywords: ["動物", "動保", "生命關懷", "動物保護"],
+    },
+    {
+        name: "台灣動物緊急救援小組",
+        website: "https://www.savedogs.org",
+        categories: ["動物／流浪動物"],
+        keywords: ["動物", "動保", "動物救援", "流浪犬", "流浪動物"],
+    },
+    {
+        name: "Animals Taiwan 台灣動物協會",
+        website: "https://www.animalstaiwan.org",
+        categories: ["動物／流浪動物"],
+        keywords: ["動物", "動保", "流浪動物", "animal"],
+    },
+    {
+        name: "社團法人台灣流浪動物救援協會",
+        website: "https://thara.eoffering.org.tw",
+        categories: ["動物／流浪動物"],
+        keywords: ["動物", "動保", "流浪動物", "動物救援", "犬", "貓"],
+    },
 
-    // 常見台灣動保組織 / 公益組織
-    "https://www.taiwananimal.org",
-    "https://www.lca.org.tw",
-    "https://www.tspca.org.tw"
+    // Children / family / disability / elderly / medical
+    {
+        name: "財團法人台灣兒童暨家庭扶助基金會",
+        website: "https://www.ccf.org.tw",
+        categories: ["兒童／青少年", "社會福利", "婦女／家庭"],
+        keywords: ["兒童", "兒少", "弱勢", "家庭", "扶助", "助學"],
+    },
+    {
+        name: "財團法人兒童福利聯盟文教基金會",
+        website: "https://www.children.org.tw",
+        categories: ["兒童／青少年", "社會福利"],
+        keywords: ["兒童", "兒少", "兒童福利", "弱勢兒童"],
+    },
+    {
+        name: "財團法人伊甸社會福利基金會",
+        website: "https://www.eden.org.tw",
+        categories: ["身心障礙", "社會福利"],
+        keywords: ["身心障礙", "身障", "弱勢", "社會福利"],
+    },
+    {
+        name: "財團法人心路社會福利基金會",
+        website: "https://www.syinlu.org.tw",
+        categories: ["身心障礙", "社會福利"],
+        keywords: ["身心障礙", "智能障礙", "早療", "社會福利"],
+    },
+    {
+        name: "財團法人弘道老人福利基金會",
+        website: "https://www.hondao.org.tw",
+        categories: ["長者／老人福利", "社會福利"],
+        keywords: ["老人", "長者", "高齡", "銀髮", "老人福利"],
+    },
+    {
+        name: "財團法人癌症希望基金會",
+        website: "https://www.ecancer.org.tw",
+        categories: ["醫療／疾病"],
+        keywords: ["癌症", "癌友", "病友", "醫療"],
+    },
+    {
+        name: "財團法人罕見疾病基金會",
+        website: "https://www.tfrd.org.tw",
+        categories: ["醫療／疾病"],
+        keywords: ["罕見疾病", "病友", "醫療"],
+    },
+    {
+        name: "財團法人勵馨社會福利事業基金會",
+        website: "https://www.goh.org.tw",
+        categories: ["婦女／家庭", "社會福利", "兒童／青少年"],
+        keywords: ["婦女", "家庭", "家暴", "兒少", "社會福利"],
+    },
+    {
+        name: "財團法人世界展望會",
+        website: "https://www.worldvision.org.tw",
+        categories: ["兒童／青少年", "社會福利", "國際援助"],
+        keywords: ["兒童", "弱勢", "助學", "國際援助", "公益"],
+    },
+
+    // Environment
+    {
+        name: "社團法人台灣環境資訊協會",
+        website: "https://teia.tw",
+        categories: ["環境／生態"],
+        keywords: ["環境", "生態", "保育", "環保"],
+    },
 ];
 
 // ============================================================
-// 排除網域
+// Caches
 // ============================================================
 
-const excludedDomains = [
+let governmentCache: {
+    timestamp: number;
+    entries: GovernmentEntry[];
+    warnings: string[];
+} | null = null;
 
-    // 搜尋引擎
-    "google.com",
-    "google.com.tw",
-    "bing.com",
-    "yahoo.com",
-    "yahoo.com.tw",
-    "duckduckgo.com",
-
-    // 社群
-    "facebook.com",
-    "instagram.com",
-    "threads.net",
-    "twitter.com",
-    "x.com",
-    "youtube.com",
-
-    // 百科
-    "wikipedia.org",
-
-    // 新聞
-    "udn.com",
-    "setn.com",
-    "ettoday.net",
-    "ltn.com.tw",
-    "news.ltn.com.tw",
-    "cna.com.tw",
-
-    // 電商
-    "shoplineapp.com",
-    "shopify.com",
-    "pchome.com.tw",
-    "ruten.com.tw",
-    "momo.com.tw",
-    "momoshop.com.tw",
-    "amazon.com",
-
-    // 求職 / 內容平台
-    "indeed.com",
-    "104.com.tw",
-    "1111.com.tw",
-    "linkedin.com",
-    "medium.com",
-    "blogspot.com",
-    "wordpress.com",
-
-    // 海外常見
-    "wikipedia.org",
-    "org",
-];
+const websiteCache = new Map<
+    string,
+    {
+        timestamp: number;
+        html: string;
+        finalUrl: string;
+    }
+>();
 
 // ============================================================
-// 海外國家 / 網域黑名單
+// General helpers
 // ============================================================
 
-const foreignTlds = [
-    ".jp",
-    ".co.jp",
-    ".us",
-    ".uk",
-    ".de",
-    ".fr",
-    ".cn",
-    ".hk",
-    ".sg",
-    ".au",
-    ".ca",
-    ".kr",
-    ".nz",
-    ".my",
-    ".ph",
-    ".in"
-];
-
-// ============================================================
-// HTML 清理
-// ============================================================
-
-function cleanHtml(html: string) {
-
-    return html
-        .replace(
-            /<script[\s\S]*?<\/script>/gi,
-            " "
-        )
-        .replace(
-            /<style[\s\S]*?<\/style>/gi,
-            " "
-        )
-        .replace(
-            /<noscript[\s\S]*?<\/noscript>/gi,
-            " "
-        )
-        .replace(
-            /<svg[\s\S]*?<\/svg>/gi,
-            " "
-        )
-        .replace(
-            /<iframe[\s\S]*?<\/iframe>/gi,
-            " "
-        )
-        .replace(
-            /<[^>]+>/g,
-            " "
-        )
-        .replace(
-            /\s+/g,
-            " "
-        )
-        .trim();
-}
-
-// ============================================================
-// HTML Entity
-// ============================================================
-
-function decodeHtml(text: string) {
-
-    return text
+function cleanText(value: string) {
+    return String(value || "")
+        .replace(/^\uFEFF/, "")
+        .replace(/&nbsp;/gi, " ")
         .replace(/&amp;/gi, "&")
         .replace(/&quot;/gi, '"')
         .replace(/&#39;/gi, "'")
         .replace(/&lt;/gi, "<")
         .replace(/&gt;/gi, ">")
-        .replace(/&nbsp;/gi, " ");
+        .replace(/<[^>]+>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
 }
 
-// ============================================================
-// URL 標準化
-// ============================================================
+function cleanHtml(html: string) {
+    return cleanText(
+        html
+            .replace(/<script[\s\S]*?<\/script>/gi, " ")
+            .replace(/<style[\s\S]*?<\/style>/gi, " ")
+            .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
+            .replace(/<svg[\s\S]*?<\/svg>/gi, " ")
+            .replace(/<iframe[\s\S]*?<\/iframe>/gi, " ")
+    );
+}
 
-function normalizeUrl(
-    rawUrl: string
-) {
+function uniqueStrings(values: string[]) {
+    return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
 
-    if (!rawUrl) {
-        return "";
-    }
+function normalizeName(value: string) {
+    return cleanText(value)
+        .toLowerCase()
+        .replace(/社團法人|財團法人|中華民國|臺灣|台灣/g, "")
+        .replace(/[\s（）()\-＿_／/・·.,，。]/g, "")
+        .trim();
+}
 
-    let value =
-        rawUrl.trim();
-
-    try {
-        value =
-            decodeURIComponent(
-                value
-            );
-    } catch {}
-
-    // 去除 HTML 垃圾
-    value =
-        value
-            .replace(
-                /^["']+|["']+$/g,
-                ""
-            )
-            .trim();
-
-    // 絕對不要讓 html / font 再進來
-    if (
-        value === "html" ||
-        value === "font" ||
-        value === "https://html" ||
-        value === "https://font" ||
-        value.startsWith("javascript:") ||
-        value.startsWith("data:") ||
-        value.startsWith("#")
-    ) {
-        return "";
-    }
-
-    if (
-        value.startsWith("//")
-    ) {
-        value =
-            "https:" + value;
-    }
-
-    if (
-        !/^https?:\/\//i.test(
-            value
-        )
-    ) {
-        value =
-            `https://${value}`;
-    }
+function normalizeUrl(value: string) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
 
     try {
-
-        const parsed =
-            new URL(value);
-
-        if (
-            !parsed.hostname ||
-            !parsed.hostname.includes(".")
-        ) {
-            return "";
-        }
-
-        return (
-            parsed.protocol +
-            "//" +
-            parsed.hostname
-        );
-
+        const withProtocol = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+        const parsed = new URL(withProtocol);
+        parsed.hash = "";
+        return `${parsed.protocol}//${parsed.hostname}${parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/+$/, "")}`;
     } catch {
-
         return "";
     }
 }
 
-// ============================================================
-// 是否台灣網站
-// ============================================================
-
-function isTaiwanDomain(
-    url: string
-) {
-
+function getHostname(value: string) {
     try {
-
-        const parsed =
-            new URL(url);
-
-        const hostname =
-            parsed.hostname
-                .replace(
-                    /^www\./i,
-                    ""
-                )
-                .toLowerCase();
-
-        // 台灣正式網域
-        if (
-            hostname.endsWith(".tw")
-        ) {
-            return true;
-        }
-
-        // 台灣公益常見
-        if (
-            hostname.endsWith(".org.tw")
-        ) {
-            return true;
-        }
-
-        if (
-            hostname.endsWith(".ngo.tw")
-        ) {
-            return true;
-        }
-
-        if (
-            hostname.endsWith(".gov.tw")
-        ) {
-            return true;
-        }
-
-        // 海外 TLD 明確排除
-        if (
-            foreignTlds.some(
-                tld =>
-                    hostname.endsWith(tld)
-            )
-        ) {
-            return false;
-        }
-
-        return false;
-
+        return new URL(value).hostname.toLowerCase().replace(/^www\./, "");
     } catch {
-
-        return false;
+        return "";
     }
 }
 
-// ============================================================
-// 台灣內容驗證
-//
-// 解決日本、美國網站跑進來的核心
-// ============================================================
+function findSignals(text: string, signals: string[]) {
+    const lower = text.toLowerCase();
+    return signals.filter((signal) => lower.includes(signal.toLowerCase()));
+}
 
-function isTaiwanContent(
-    text: string,
-    url: string
-) {
+function getProfile(keyword: string) {
+    const lower = keyword.toLowerCase().trim();
 
-    const lower =
-        text.toLowerCase();
+    let best: CategoryProfile | null = null;
+    let bestLength = 0;
 
-    // 網域本身是 .tw
-    if (
-        isTaiwanDomain(url)
-    ) {
-        return true;
-    }
-
-    // 台灣身份關鍵字
-    const taiwanSignals = [
-        "台灣",
-        "臺灣",
-        "台北",
-        "臺北",
-        "新北",
-        "桃園",
-        "新竹",
-        "台中",
-        "臺中",
-        "彰化",
-        "嘉義",
-        "台南",
-        "臺南",
-        "高雄",
-        "屏東",
-        "宜蘭",
-        "花蓮",
-        "台東",
-        "臺東",
-        "基隆",
-        "澎湖",
-        "金門",
-        "連江",
-        "taiwan",
-        "taipei",
-        "kaohsiung"
-    ];
-
-    let score = 0;
-
-    for (
-        const signal
-        of taiwanSignals
-    ) {
-
-        if (
-            lower.includes(
-                signal.toLowerCase()
-            )
-        ) {
-            score++;
+    for (const profile of categoryProfiles) {
+        for (const trigger of profile.triggers) {
+            if (lower.includes(trigger.toLowerCase()) || trigger.toLowerCase().includes(lower)) {
+                if (trigger.length > bestLength) {
+                    best = profile;
+                    bestLength = trigger.length;
+                }
+            }
         }
     }
 
-    // 至少兩個台灣訊號
-    return score >= 2;
+    return best;
 }
 
 // ============================================================
-// 絕對排除海外
+// CSV parser
 // ============================================================
 
-function isForeignWebsite(
-    url: string,
-    text: string
-) {
+function parseCsvRows(csv: string): string[][] {
+    const text = csv.replace(/^\uFEFF/, "");
+    const rows: string[][] = [];
+    let row: string[] = [];
+    let cell = "";
+    let inQuotes = false;
 
+    for (let i = 0; i < text.length; i++) {
+        const char = text[i];
+        const next = text[i + 1];
+
+        if (char === '"') {
+            if (inQuotes && next === '"') {
+                cell += '"';
+                i++;
+            } else {
+                inQuotes = !inQuotes;
+            }
+            continue;
+        }
+
+        if (char === "," && !inQuotes) {
+            row.push(cell.trim());
+            cell = "";
+            continue;
+        }
+
+        if ((char === "\n" || char === "\r") && !inQuotes) {
+            if (char === "\r" && next === "\n") i++;
+            row.push(cell.trim());
+            cell = "";
+
+            if (row.some((value) => value.trim())) rows.push(row);
+            row = [];
+            continue;
+        }
+
+        cell += char;
+    }
+
+    if (cell || row.length > 0) {
+        row.push(cell.trim());
+        if (row.some((value) => value.trim())) rows.push(row);
+    }
+
+    return rows;
+}
+
+function rowsToObjects(rows: string[][]) {
+    if (rows.length === 0) return [] as Record<string, string>[];
+
+    let headerIndex = 0;
+
+    // The association dataset currently includes an English header and a Chinese label row.
+    // Prefer the first row as headers if it looks structured.
+    const headers = rows[headerIndex].map((value) => cleanText(value));
+
+    return rows.slice(headerIndex + 1).map((row) => {
+        const item: Record<string, string> = {};
+        headers.forEach((header, index) => {
+            item[header] = cleanText(row[index] || "");
+        });
+        return item;
+    });
+}
+
+function firstValue(item: Record<string, string>, keys: string[]) {
+    for (const key of keys) {
+        if (item[key]) return cleanText(item[key]);
+    }
+    return "";
+}
+
+// ============================================================
+// Fetch government CSVs
+// ============================================================
+
+async function fetchText(url: string, timeoutMs = 18000) {
     try {
+        const response = await fetch(url, {
+            headers: {
+                "User-Agent": "PayLead-Finder-Charity/4.0",
+                Accept: "text/csv,text/plain,*/*",
+            },
+            cache: "no-store",
+            signal: AbortSignal.timeout(timeoutMs),
+        });
 
-        const hostname =
-            new URL(url)
-                .hostname
-                .toLowerCase();
-
-        if (
-            foreignTlds.some(
-                tld =>
-                    hostname.endsWith(tld)
-            )
-        ) {
-            return true;
+        if (!response.ok) {
+            return { text: "", error: `HTTP ${response.status}` };
         }
 
-        const lower =
-            text.toLowerCase();
-
-        const foreignSignals = [
-            "japan",
-            "日本",
-            "tokyo",
-            "osaka",
-            "united states",
-            "usa",
-            "america",
-            "new york",
-            "california",
-            "los angeles",
-            "united kingdom",
-            "germany",
-            "france",
-            "australia",
-            "singapore"
-        ];
-
-        // 有台灣內容時，不直接因為文字出現 foreign 就排除
-        const taiwanSignals = [
-            "台灣",
-            "臺灣",
-            "taiwan",
-            "taipei"
-        ];
-
-        const hasTaiwan =
-            taiwanSignals.some(
-                signal =>
-                    lower.includes(
-                        signal.toLowerCase()
-                    )
-            );
-
-        const foreignCount =
-            foreignSignals.filter(
-                signal =>
-                    lower.includes(
-                        signal.toLowerCase()
-                    )
-            ).length;
-
-        if (
-            foreignCount >= 2 &&
-            !hasTaiwan
-        ) {
-            return true;
-        }
-
-        return false;
-
-    } catch {
-
-        return true;
+        return { text: await response.text(), error: "" };
+    } catch (error) {
+        return {
+            text: "",
+            error: error instanceof Error ? error.message : "fetch failed",
+        };
     }
 }
 
-// ============================================================
-// Search URL 驗證
-// ============================================================
+function parseAssociationCsv(csv: string): GovernmentEntry[] {
+    const objects = rowsToObjects(parseCsvRows(csv));
+    const results: GovernmentEntry[] = [];
 
-function isValidSearchUrl(
-    url: string
-) {
+    for (const item of objects) {
+        const name = firstValue(item, ["Name", "協會名稱", "團體名稱"]);
+        const address = firstValue(item, ["address", "地址"]);
+        const established = firstValue(item, ["Date_of_Establishment", "成立日期"]);
+        const chairman = firstValue(item, ["Chairman", "理事長", "負責人"]);
 
-    if (!url) {
-        return false;
-    }
+        // Skip the Chinese label row that appears directly below the English header.
+        if (!name || name === "協會名稱" || name === "團體名稱") continue;
 
-    if (
-        url === "https://font" ||
-        url === "https://html"
-    ) {
-        return false;
-    }
-
-    if (
-        url.includes(
-            "javascript:"
-        ) ||
-        url.includes(
-            "mailto:"
-        )
-    ) {
-        return false;
-    }
-
-    try {
-
-        const parsed =
-            new URL(url);
-
-        const hostname =
-            parsed.hostname
-                .replace(
-                    /^www\./,
-                    ""
-                )
-                .toLowerCase();
-
-        if (
-            !hostname ||
-            !hostname.includes(".")
-        ) {
-            return false;
-        }
-
-        if (
-            isExcludedDomain(
-                url
-            )
-        ) {
-            return false;
-        }
-
-        // 海外網域直接不要
-        if (
-            foreignTlds.some(
-                tld =>
-                    hostname.endsWith(tld)
-            )
-        ) {
-            return false;
-        }
-
-        return true;
-
-    } catch {
-
-        return false;
-    }
-}
-
-// ============================================================
-// 排除網域
-// ============================================================
-
-function isExcludedDomain(
-    url: string
-) {
-
-    try {
-
-        const hostname =
-            new URL(url)
-                .hostname
-                .replace(
-                    /^www\./,
-                    ""
-                )
-                .toLowerCase();
-
-        return excludedDomains.some(
-            domain =>
-                hostname === domain ||
-                hostname.endsWith(
-                    `.${domain}`
-                )
-        );
-
-    } catch {
-
-        return true;
-    }
-}
-
-// ============================================================
-// 偵測組織名稱
-// ============================================================
-
-function detectOrganizationName(
-    html: string,
-    url: string
-) {
-
-    const ogSiteName =
-        html.match(
-            /<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']/i
-        );
-
-    if (
-        ogSiteName?.[1]
-    ) {
-
-        return decodeHtml(
-            ogSiteName[1]
-        ).trim();
-    }
-
-    const applicationName =
-        html.match(
-            /<meta[^>]+name=["']application-name["'][^>]+content=["']([^"']+)["']/i
-        );
-
-    if (
-        applicationName?.[1]
-    ) {
-
-        return decodeHtml(
-            applicationName[1]
-        ).trim();
-    }
-
-    const title =
-        html.match(
-            /<title[^>]*>([\s\S]*?)<\/title>/i
-        );
-
-    if (
-        title?.[1]
-    ) {
-
-        const titleText =
-            decodeHtml(
-                title[1]
-            )
-                .replace(
-                    /\s+/g,
-                    " "
-                )
-                .trim();
-
-        if (
-            titleText.length >= 2 &&
-            titleText.length <= 150
-        ) {
-
-            return titleText;
-        }
-    }
-
-    try {
-
-        return new URL(url)
-            .hostname
-            .replace(
-                /^www\./i,
-                ""
-            );
-
-    } catch {
-
-        return "未知公益組織";
-    }
-}
-
-// ============================================================
-// 分類
-// ============================================================
-
-function detectCharityCategories(
-    text: string
-) {
-
-    const lowerText =
-        text.toLowerCase();
-
-    const results: string[] = [];
-
-    for (
-        const category
-        of charityCategories
-    ) {
-
-        const matched =
-            category.keywords.some(
-                keyword =>
-                    lowerText.includes(
-                        keyword.toLowerCase()
-                    )
-            );
-
-        if (matched) {
-            results.push(
-                category.name
-            );
-        }
+        results.push({
+            name,
+            address,
+            established,
+            chairman,
+            type: "全國性人民團體",
+            source: "內政部全國性人民團體名冊",
+        });
     }
 
     return results;
 }
 
-// ============================================================
-// 捐款
-// ============================================================
+function parseFoundationCsv(csv: string): GovernmentEntry[] {
+    const objects = rowsToObjects(parseCsvRows(csv));
+    const results: GovernmentEntry[] = [];
 
-function detectDonation(
-    text: string
-): DonationResult {
+    for (const item of objects) {
+        const name = firstValue(item, ["團體名稱", "法人名稱", "Name", "名稱"]);
+        const address = firstValue(item, ["地址", "主事務所地址", "address"]);
+        const established = firstValue(item, ["成立日期", "許可設立日期", "Date_of_Establishment"]);
+        const type = firstValue(item, ["類型", "type"]) || "財團法人";
+        const chairman = firstValue(item, ["負責人", "法人代表", "Chairman"]);
 
-    const lowerText =
-        text.toLowerCase();
+        if (!name || name === "團體名稱" || name === "法人名稱") continue;
 
-    const donationKeywords = [
-        "捐款",
-        "捐贈",
-        "支持我們",
-        "立即捐款",
-        "線上捐款",
-        "愛心捐款",
-        "我要捐款",
-        "線上捐贈",
-        "立即支持",
-        "donate",
-        "donation"
-    ];
-
-    const recurringKeywords = [
-        "定期捐款",
-        "定期定額",
-        "每月捐款",
-        "月捐",
-        "定期捐贈",
-        "每月支持",
-        "長期支持",
-        "每月定期",
-        "recurring donation",
-        "monthly donation"
-    ];
-
-    const donationFound =
-        donationKeywords.some(
-            keyword =>
-                lowerText.includes(
-                    keyword.toLowerCase()
-                )
-        );
-
-    const recurringFound =
-        recurringKeywords.some(
-            keyword =>
-                lowerText.includes(
-                    keyword.toLowerCase()
-                )
-        );
-
-    const methods: string[] = [];
-
-    if (donationFound) {
-        methods.push(
-            "線上捐款"
-        );
+        results.push({
+            name,
+            address,
+            established,
+            chairman,
+            type,
+            source: "內政部財團法人名冊",
+        });
     }
 
-    if (recurringFound) {
-        methods.push(
-            "定期捐款"
-        );
-    }
-
-    return {
-        online: donationFound,
-        recurring: recurringFound,
-        methods
-    };
+    return results;
 }
 
-// ============================================================
-// 實體據點
-// ============================================================
-
-function detectPhysicalStore(
-    text: string
-): PhysicalResult {
-
-    const lowerText =
-        text.toLowerCase();
-
-    const signals: string[] = [];
-
-    const addressKeywords = [
-        "地址",
-        "聯絡地址",
-        "服務地址",
-        "服務據點",
-        "據點",
-        "服務中心",
-        "中心",
-        "分會",
-        "辦事處",
-        "門市",
-        "店址",
-        "營業地址",
-        "location",
-        "address",
-        "office",
-        "center"
-    ];
-
-    for (
-        const keyword
-        of addressKeywords
+async function loadGovernmentEntries() {
+    if (
+        governmentCache &&
+        governmentCache.entries.length > 0 &&
+        Date.now() - governmentCache.timestamp < GOVERNMENT_CACHE_TTL
     ) {
+        console.log("🏛️ Government Cache：", governmentCache.entries.length);
+        return governmentCache;
+    }
 
-        if (
-            lowerText.includes(
-                keyword.toLowerCase()
-            )
-        ) {
+    const warnings: string[] = [];
 
-            signals.push(
-                keyword
-            );
+    const [association, foundation] = await Promise.all([
+        fetchText(ASSOCIATION_CSV_URL),
+        fetchText(FOUNDATION_CSV_URL),
+    ]);
+
+    const entries: GovernmentEntry[] = [];
+
+    if (association.text) {
+        const parsed = parseAssociationCsv(association.text);
+        entries.push(...parsed);
+        console.log("🏛️ 人民團體名冊：", parsed.length);
+    } else {
+        warnings.push(`人民團體名冊：${association.error}`);
+    }
+
+    if (foundation.text) {
+        const parsed = parseFoundationCsv(foundation.text);
+        entries.push(...parsed);
+        console.log("🏛️ 財團法人名冊：", parsed.length);
+    } else {
+        warnings.push(`財團法人名冊：${foundation.error}`);
+    }
+
+    // Deduplicate exact / normalized names.
+    const map = new Map<string, GovernmentEntry>();
+    for (const item of entries) {
+        const key = normalizeName(item.name) || item.name;
+        const existing = map.get(key);
+
+        if (!existing) {
+            map.set(key, item);
+            continue;
+        }
+
+        // Prefer the entry with a usable address and more specific type.
+        if ((!existing.address && item.address) || existing.type === "全國性人民團體") {
+            map.set(key, {
+                ...existing,
+                ...item,
+                address: item.address || existing.address,
+            });
         }
     }
 
-    const phoneFound =
-        /(?:0\d{1,2}[-\s]?\d{6,8})/.test(
-            text
-        );
+    const result = {
+        timestamp: Date.now(),
+        entries: Array.from(map.values()),
+        warnings,
+    };
 
-    if (phoneFound) {
-        signals.push(
-            "電話資訊"
-        );
+    // Only cache successful non-empty government data.
+    if (result.entries.length > 0) {
+        governmentCache = result;
+    }
+
+    return result;
+}
+
+// ============================================================
+// Candidate scoring
+// ============================================================
+
+function scoreGovernmentEntry(entry: GovernmentEntry, keyword: string, profile: CategoryProfile | null) {
+    const name = entry.name.toLowerCase();
+    const keywordLower = keyword.toLowerCase().trim();
+    let score = 0;
+    const evidence: string[] = [];
+
+    if (keywordLower && name.includes(keywordLower)) {
+        score += 60;
+        evidence.push(`名稱包含：${keyword}`);
+    }
+
+    const terms = profile
+        ? uniqueStrings([...profile.searchTerms, ...profile.strongNameSignals, ...profile.triggers])
+        : [keyword];
+
+    for (const term of terms) {
+        if (!term) continue;
+        if (name.includes(term.toLowerCase())) {
+            const weight = profile?.strongNameSignals.includes(term) ? 24 : 12;
+            score += weight;
+            evidence.push(`名稱訊號：${term}`);
+        }
+    }
+
+    const genericHits = genericCharityNameSignals.filter((term) => name.includes(term.toLowerCase()));
+    score += Math.min(genericHits.length * 4, 12);
+
+    if (entry.type.includes("財團法人")) score += 6;
+    if (entry.address) score += 3;
+
+    const negativeSignals = [
+        ...genericNonLeadSignals,
+        ...(profile?.negativeNameSignals || []),
+    ];
+
+    const negativeHits = negativeSignals.filter((term) => name.includes(term.toLowerCase()));
+
+    if (negativeHits.length > 0) {
+        // Strong direct charity-category matches can survive a mild negative term,
+        // otherwise professional / commercial associations are removed.
+        const strongHits = profile
+            ? profile.strongNameSignals.filter((term) => name.includes(term.toLowerCase())).length
+            : 0;
+
+        score -= strongHits > 0 ? negativeHits.length * 12 : negativeHits.length * 45;
+        evidence.push(...negativeHits.map((term) => `排除風險：${term}`));
     }
 
     return {
-        hasPhysicalStore:
-            signals.length >= 1,
-
-        signals:
-            Array.from(
-                new Set(
-                    signals
-                )
-            ).slice(0, 8)
+        score,
+        evidence: uniqueStrings(evidence).slice(0, 10),
     };
 }
 
+function findGovernmentCandidates(entries: GovernmentEntry[], keyword: string) {
+    const profile = getProfile(keyword);
+
+    const scored = entries
+        .map((entry) => {
+            const analysis = scoreGovernmentEntry(entry, keyword, profile);
+            return {
+                ...entry,
+                score: analysis.score,
+                _evidence: analysis.evidence,
+            };
+        })
+        .filter((entry) => entry.score >= (profile ? 16 : 28))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, GOVERNMENT_CANDIDATE_LIMIT);
+
+    return scored;
+}
+
+function matchingSeeds(keyword: string) {
+    const profile = getProfile(keyword);
+    const lower = keyword.toLowerCase();
+
+    return websiteSeeds
+        .map((seed) => {
+            let score = 0;
+
+            if (seed.name.toLowerCase().includes(lower)) score += 60;
+
+            for (const term of seed.keywords) {
+                if (lower.includes(term.toLowerCase()) || term.toLowerCase().includes(lower)) {
+                    score += 22;
+                }
+            }
+
+            if (profile && seed.categories.includes(profile.name)) score += 45;
+
+            return { seed, score };
+        })
+        .filter((item) => item.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .map((item) => item.seed);
+}
+
+function findSeedForGovernmentEntry(entry: GovernmentEntry) {
+    const normalized = normalizeName(entry.name);
+
+    return websiteSeeds.find((seed) => {
+        const seedName = normalizeName(seed.name);
+        return (
+            seedName === normalized ||
+            (seedName.length >= 5 && normalized.includes(seedName)) ||
+            (normalized.length >= 5 && seedName.includes(normalized))
+        );
+    });
+}
+
 // ============================================================
-// 勸募
+// Website analysis
 // ============================================================
 
-function detectFundraising(
-    text: string
-): FundraisingResult {
+async function fetchWebsite(url: string) {
+    const normalized = normalizeUrl(url);
+    if (!normalized) return { html: "", finalUrl: "", error: "invalid url" };
 
-    const lowerText =
-        text.toLowerCase();
+    const cached = websiteCache.get(normalized);
+    if (cached && Date.now() - cached.timestamp < WEBSITE_CACHE_TTL) {
+        return { html: cached.html, finalUrl: cached.finalUrl, error: "" };
+    }
 
-    const keywords = [
+    try {
+        const response = await fetch(normalized, {
+            headers: {
+                "User-Agent":
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
+                Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+            },
+            redirect: "follow",
+            cache: "no-store",
+            signal: AbortSignal.timeout(10000),
+        });
+
+        if (!response.ok) {
+            return { html: "", finalUrl: normalized, error: `HTTP ${response.status}` };
+        }
+
+        const html = await response.text();
+        const finalUrl = response.url || normalized;
+
+        if (html) {
+            websiteCache.set(normalized, {
+                timestamp: Date.now(),
+                html,
+                finalUrl,
+            });
+        }
+
+        return { html, finalUrl, error: "" };
+    } catch (error) {
+        return {
+            html: "",
+            finalUrl: normalized,
+            error: error instanceof Error ? error.message : "fetch failed",
+        };
+    }
+}
+
+function extractDonationLinks(html: string, baseUrl: string) {
+    const links: string[] = [];
+    const regex = /<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+    let match: RegExpExecArray | null;
+
+    while ((match = regex.exec(html))) {
+        const href = cleanText(match[1]);
+        const anchor = cleanText(match[2]);
+        const combined = `${href} ${anchor}`.toLowerCase();
+
+        if (!/(捐款|捐贈|支持|贊助|donat|giving|give|support)/i.test(combined)) continue;
+
+        try {
+            const url = new URL(href, baseUrl).toString();
+            const baseHost = getHostname(baseUrl);
+            const targetHost = getHostname(url);
+
+            if (!targetHost) continue;
+
+            // Permit official site's donation subdomain and common third-party donation pages.
+            const sameOrganization =
+                targetHost === baseHost ||
+                targetHost.endsWith(`.${baseHost}`) ||
+                baseHost.endsWith(`.${targetHost}`);
+
+            const donationProvider = /(eoffering|ugiving|neti|donate|giving)/i.test(targetHost);
+
+            if (sameOrganization || donationProvider) links.push(url);
+        } catch {
+            // ignore malformed href
+        }
+
+        if (links.length >= 3) break;
+    }
+
+    return uniqueStrings(links);
+}
+
+function detectDonation(text: string): DonationResult {
+    const lower = text.toLowerCase();
+
+    const donationSignals = findSignals(lower, [
+        "線上捐款",
+        "立即捐款",
+        "我要捐款",
+        "愛心捐款",
+        "捐款支持",
+        "捐贈",
+        "支持我們",
+        "贊助我們",
+        "donate",
+        "donation",
+        "give now",
+    ]);
+
+    const recurringSignals = findSignals(lower, [
+        "定期定額",
+        "定期捐款",
+        "每月捐款",
+        "月捐",
+        "每月支持",
+        "recurring donation",
+        "monthly donation",
+        "monthly giving",
+    ]);
+
+    const methods: string[] = [];
+
+    const methodGroups = [
+        { name: "信用卡", signals: ["信用卡", "visa", "mastercard", "jcb"] },
+        { name: "定期定額", signals: ["定期定額", "每月捐款", "月捐", "recurring"] },
+        { name: "ATM／轉帳", signals: ["atm", "銀行轉帳", "匯款", "轉帳"] },
+        { name: "超商", signals: ["超商", "便利商店", "ibon", "famiport"] },
+        { name: "LINE Pay", signals: ["line pay"] },
+        { name: "街口支付", signals: ["街口支付", "jkopay"] },
+        { name: "全支付", signals: ["全支付", "全+pay", "pxpay+"] },
+        { name: "Apple Pay", signals: ["apple pay"] },
+    ];
+
+    for (const group of methodGroups) {
+        if (group.signals.some((signal) => lower.includes(signal.toLowerCase()))) {
+            methods.push(group.name);
+        }
+    }
+
+    const online = donationSignals.length > 0 || methods.length > 0;
+    const recurring = recurringSignals.length > 0 || methods.includes("定期定額");
+
+    return {
+        online,
+        hasOnlineDonation: online,
+        recurring,
+        hasRecurringDonation: recurring,
+        methods: uniqueStrings(methods),
+        signals: uniqueStrings([...donationSignals, ...recurringSignals]).slice(0, 12),
+    };
+}
+
+function detectFundraising(text: string): FundraisingResult {
+    const signals = findSignals(text, [
         "勸募字號",
         "勸募許可",
         "勸募核准",
-        "衛部救字",
-        "衛部救",
-        "府社",
-        "勸募活動",
-        "勸募期間",
-        "募款期間",
-        "募款許可",
-        "公益勸募",
         "勸募文號",
-        "勸募許可文號",
-        "公益勸募活動"
+        "公益勸募",
+        "勸募活動",
+        "募款許可",
+        "募款期間",
+        "勸募期間",
+    ]);
+
+    const patterns = [
+        /衛部救字第[^\s，。,、；;]{2,40}/i,
+        /衛授救字第[^\s，。,、；;]{2,40}/i,
+        /府社字第[^\s，。,、；;]{2,40}/i,
+        /勸募許可字號[：:\s]*[A-Za-z0-9\u4e00-\u9fff\-\/]{3,50}/i,
+        /勸募字號[：:\s]*[A-Za-z0-9\u4e00-\u9fff\-\/]{3,50}/i,
     ];
 
-    const signals =
-        keywords.filter(
-            keyword =>
-                lowerText.includes(
-                    keyword.toLowerCase()
-                )
-        );
-
-    const numberMatch =
-        text.match(
-            /(?:衛部救字|衛部救|府社)[^\s，。,；;]{0,30}/i
-        );
+    let number = "";
+    for (const pattern of patterns) {
+        const match = text.match(pattern);
+        if (match?.[0]) {
+            number = cleanText(match[0]);
+            break;
+        }
+    }
 
     return {
-        hasFundraisingInfo:
-            signals.length > 0 ||
-            !!numberMatch,
-
-        signals:
-            signals.slice(0, 8),
-
-        number:
-            numberMatch?.[0]?.trim()
+        hasFundraisingInfo: Boolean(number) || signals.length > 0,
+        number,
+        signals: uniqueStrings(signals).slice(0, 10),
     };
 }
 
-// ============================================================
-// 全支付
-// ============================================================
-
-function detectFullPay(
-    text: string
-) {
-
-    const lowerText =
-        text.toLowerCase();
-
-    const keywords = [
+function detectFullPay(text: string) {
+    const signals = findSignals(text, [
         "全支付",
         "全+pay",
         "全+支付",
         "pxpay+",
         "px pay+",
-        "pxpay plus",
-        "px pay plus",
-        "plus pay",
-        "全支付付款",
-        "全支付支付",
-        "使用全支付",
         "全支付捐款",
-        "全支付捐贈"
-    ];
-
-    const signals =
-        keywords.filter(
-            keyword =>
-                lowerText.includes(
-                    keyword.toLowerCase()
-                )
-        );
+        "全支付捐贈",
+    ]);
 
     return {
-        hasFullPay:
-            signals.length > 0,
-
-        signals:
-            signals.slice(
-                0,
-                10
-            )
+        hasFullPay: signals.length > 0,
+        signals: uniqueStrings(signals),
+        excludeFromSearch: signals.length > 0,
     };
 }
 
-// ============================================================
-// Score
-// ============================================================
+function categoryFromText(keyword: string, name: string, text: string, seed?: SeedEntry) {
+    const categories = new Set<string>();
 
-function calculatePaymentScore(
-    donation: DonationResult
-) {
+    if (seed) seed.categories.forEach((item) => categories.add(item));
 
-    if (!donation.online) {
-        return 0;
+    const haystack = `${keyword} ${name} ${text}`.toLowerCase();
+
+    for (const profile of categoryProfiles) {
+        const hits = [...profile.triggers, ...profile.strongNameSignals].filter((signal) =>
+            haystack.includes(signal.toLowerCase())
+        );
+        if (hits.length > 0) categories.add(profile.name);
     }
 
-    if (donation.recurring) {
-        return 25;
-    }
+    if (categories.size === 0) categories.add("公益組織");
 
-    return 18;
+    return Array.from(categories).slice(0, 3);
 }
 
-function calculatePhysicalScore(
-    physicalStore: PhysicalResult
-) {
+function calculatePaymentScore(donation: DonationResult, fundraising: FundraisingResult) {
+    let score = 0;
 
-    return physicalStore.hasPhysicalStore
-        ? 10
-        : 0;
+    if (donation.online) score += 12;
+    if (donation.recurring) score += 10;
+    if (donation.methods.includes("信用卡")) score += 4;
+    if (donation.methods.some((method) => ["LINE Pay", "街口支付", "Apple Pay"].includes(method))) score += 3;
+    if (fundraising.hasFundraisingInfo) score += 5;
+
+    return Math.min(score, 30);
 }
 
-// ============================================================
-// 合作
-// ============================================================
-
-function buildCooperation(
+function calculatePriority(
     donation: DonationResult,
-    physicalStore: PhysicalResult
-) {
-
-    const cooperation: string[] = [];
-
-    if (donation.online) {
-        cooperation.push(
-            "線上捐款"
-        );
-    }
-
-    if (
-        physicalStore.hasPhysicalStore
-    ) {
-        cooperation.push(
-            "實體據點"
-        );
-    }
-
-    return cooperation;
+    fundraising: FundraisingResult,
+    website: string,
+    governmentScore: number,
+    fullPay: boolean
+): "高" | "中" | "低" {
+    if (fullPay) return "低";
+    if (website && donation.online && (donation.recurring || fundraising.hasFundraisingInfo)) return "高";
+    if (website && donation.online) return "高";
+    if (website || governmentScore >= 55) return "中";
+    return "低";
 }
-
-// ============================================================
-// Recommendation
-// ============================================================
 
 function buildRecommendation(
     donation: DonationResult,
-    physicalStore: PhysicalResult,
     fundraising: FundraisingResult,
-    fullPay: {
-        hasFullPay: boolean;
-        signals: string[];
-    }
+    website: string,
+    address: string,
+    fullPay: boolean
 ) {
-
-    if (
-        fullPay.hasFullPay
-    ) {
-
-        return (
-            "官網已偵測到全支付相關資訊，" +
-            "建議確認現有合作狀態，避免重複開發。"
-        );
+    if (fullPay) {
+        return "官網已偵測到全支付相關資訊，建議先確認既有合作狀態，避免重複開發。";
     }
 
     const recommendations: string[] = [];
 
-    if (
-        donation.online
-    ) {
-
-        recommendations.push(
-            "網站已有線上捐款需求，可優先洽談 EC／APP 捐款金流合作。"
-        );
-
-        if (
-            donation.recurring
-        ) {
-
-            recommendations.push(
-                "網站具有定期捐款需求，可進一步洽談定期扣款與會員型金流。"
-            );
-        }
+    if (donation.online) {
+        recommendations.push("已有線上捐款流程，可優先洽談 EC／APP 捐款金流合作。");
     }
 
-    if (
-        physicalStore.hasPhysicalStore
-    ) {
-
-        recommendations.push(
-            "網站具有實體服務據點，可進一步確認現場收款、POS 或其他支付需求。"
-        );
+    if (donation.recurring) {
+        recommendations.push("具有定期捐款需求，可進一步評估定期扣款合作。");
     }
 
-    if (
-        fundraising.hasFundraisingInfo
-    ) {
-
-        recommendations.push(
-            "網站具有勸募相關資訊，可進一步確認 APP 捐款專區合作資格。"
-        );
+    if (fundraising.hasFundraisingInfo) {
+        recommendations.push("具公益勸募資訊，可確認 APP 捐款專區合作資格。");
     }
 
-    if (
-        recommendations.length === 0
-    ) {
-
-        recommendations.push(
-            "目前未偵測到明確線上交易或實體收款訊號，建議進一步確認付款、會員、捐款或服務收費流程。"
-        );
+    if (!donation.online && website) {
+        recommendations.push("已有官方網站但尚未偵測到明確線上捐款，可人工確認捐款流程或企業合作入口。");
     }
 
-    return recommendations.join(
-        " "
-    );
+    if (!website) {
+        recommendations.push("政府名冊符合公益類型，但尚未取得官方網站；建議先補查官網與募款方式後再進一步開發。");
+    }
+
+    if (address) {
+        recommendations.push("名冊具有實體地址，可作為聯繫及現場支付需求確認依據。");
+    }
+
+    return recommendations.join(" ");
 }
-
-// ============================================================
-// Confidence
-// ============================================================
-
-function calculateConfidence(
-    categories: string[],
-    donation: DonationResult,
-    physicalStore: PhysicalResult,
-    fundraising: FundraisingResult
-) {
-
-    let confidence = 40;
-
-    confidence += Math.min(
-        categories.length * 8,
-        24
-    );
-
-    if (
-        donation.online
-    ) {
-        confidence += 12;
-    }
-
-    if (
-        donation.recurring
-    ) {
-        confidence += 8;
-    }
-
-    if (
-        physicalStore.hasPhysicalStore
-    ) {
-        confidence += 6;
-    }
-
-    if (
-        fundraising.hasFundraisingInfo
-    ) {
-        confidence += 8;
-    }
-
-    return Math.min(
-        98,
-        confidence
-    );
-}
-
-// ============================================================
-// Evidence
-// ============================================================
-
-function buildEvidence(
-    categories: string[],
-    donation: DonationResult,
-    physicalStore: PhysicalResult,
-    fundraising: FundraisingResult,
-    fullPay: {
-        hasFullPay: boolean;
-        signals: string[];
-    }
-) {
-
-    const evidence: string[] = [];
-
-    if (
-        categories.length > 0
-    ) {
-
-        evidence.push(
-            `公益分類：${categories.join("、")}`
-        );
-    }
-
-    if (
-        donation.online
-    ) {
-
-        evidence.push(
-            "偵測到線上捐款相關資訊"
-        );
-    }
-
-    if (
-        donation.recurring
-    ) {
-
-        evidence.push(
-            "偵測到定期／每月捐款資訊"
-        );
-    }
-
-    if (
-        physicalStore.hasPhysicalStore
-    ) {
-
-        evidence.push(
-            `偵測到實體據點訊號：${physicalStore.signals.join("、")}`
-        );
-    }
-
-    if (
-        fundraising.hasFundraisingInfo
-    ) {
-
-        evidence.push(
-            `偵測到勸募資訊：${fundraising.signals.join("、")}`
-        );
-    }
-
-    if (
-        fullPay.hasFullPay
-    ) {
-
-        evidence.push(
-            `偵測到全支付相關資訊：${fullPay.signals.join("、")}`
-        );
-    }
-
-    return evidence;
-}
-
-// ============================================================
-// 分析網站
-// ============================================================
 
 async function analyzeWebsite(
-    rawUrl: string
-): Promise<CharityAnalysis | null> {
-
-    const url =
-        normalizeUrl(
-            rawUrl
-        );
-
-    if (!url) {
-        return null;
-    }
-
-    if (
-        !isValidSearchUrl(
-            url
-        )
-    ) {
-        return null;
-    }
-
-    try {
-
-        console.log(
-            "🌐 分析網站：",
-            url
-        );
-
-        const response =
-            await fetch(
-                url,
-                {
-                    headers: {
-
-                        "User-Agent":
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
-
-                        "Accept":
-                            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-
-                        "Accept-Language":
-                            "zh-TW,zh;q=0.9,en;q=0.8"
-                    },
-
-                    redirect:
-                        "follow",
-
-                    cache:
-                        "no-store",
-
-                    signal:
-                        AbortSignal.timeout(
-                            10000
-                        )
-                }
-            );
-
-        if (
-            !response.ok
-        ) {
-
-            console.log(
-                "⚠️ HTTP",
-                response.status,
-                url
-            );
-
-            return null;
-        }
-
-        const html =
-            await response.text();
-
-        if (
-            !html ||
-            html.length < 100
-        ) {
-            return null;
-        }
-
-        const text =
-            cleanHtml(
-                html
-            );
-
-        // ========================================================
-        // 台灣驗證
-        // ========================================================
-
-        if (
-            !isTaiwanContent(
-                text,
-                url
-            )
-        ) {
-
-            console.log(
-                "🚫 非台灣網站：",
-                url
-            );
-
-            return null;
-        }
-
-        if (
-            isForeignWebsite(
-                url,
-                text
-            )
-        ) {
-
-            console.log(
-                "🚫 海外網站：",
-                url
-            );
-
-            return null;
-        }
-
-        const organizationName =
-            detectOrganizationName(
-                html,
-                url
-            );
-
-        const categories =
-            detectCharityCategories(
-                text
-            );
-
-        // 如果使用者搜尋的是動物
-        // 就要求網站真的出現動物相關內容
-        //
-        // 避免「搜尋動物」卻跑出一般社福機構
-        const lowerText =
-            text.toLowerCase();
-
-        if (
-            categories.length === 0
-        ) {
-            return null;
-        }
-
-        const donation =
-            detectDonation(
-                text
-            );
-
-        const physicalStore =
-            detectPhysicalStore(
-                text
-            );
-
-        const fundraising =
-            detectFundraising(
-                text
-            );
-
-        const fullPay =
-            detectFullPay(
-                text
-            );
-
-        const paymentScore =
-            calculatePaymentScore(
-                donation
-            );
-
-        const physicalScore =
-            calculatePhysicalScore(
-                physicalStore
-            );
-
-        const cooperation =
-            buildCooperation(
-                donation,
-                physicalStore
-            );
-
-        const recommendation =
-            buildRecommendation(
-                donation,
-                physicalStore,
-                fundraising,
-                fullPay
-            );
-
-        const confidence =
-            calculateConfidence(
-                categories,
-                donation,
-                physicalStore,
-                fundraising
-            );
-
-        const evidence =
-            buildEvidence(
-                categories,
-                donation,
-                physicalStore,
-                fundraising,
-                fullPay
-            );
-
-        return {
-
-            organizationName,
-
-            url,
-
-            categories,
-
-            donation,
-
-            physicalStore,
-
-            fundraising,
-
-            fullPay,
-
-            paymentScore,
-
-            physicalScore,
-
-            confidence,
-
-            cooperation,
-
-            recommendation,
-
-            evidence
-        };
-
-    } catch (error) {
-
-        console.log(
-            "⚠️ 網站分析略過：",
-            url
-        );
-
-        return null;
-    }
-}
-
-// ============================================================
-// Bing 搜尋
-// ============================================================
-
-async function searchBing(
-    keyword: string
-): Promise<string[]> {
-
-    try {
-
-        const searchUrl =
-            `https://www.bing.com/search?q=${encodeURIComponent(
-                keyword
-            )}&count=20&setlang=zh-TW&cc=TW`;
-
-        const response =
-            await fetch(
-                searchUrl,
-                {
-                    headers: {
-
-                        "User-Agent":
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
-
-                        "Accept":
-                            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-
-                        "Accept-Language":
-                            "zh-TW,zh;q=0.9,en;q=0.8"
-                    },
-
-                    cache:
-                        "no-store",
-
-                    signal:
-                        AbortSignal.timeout(
-                            8000
-                        )
-                }
-            );
-
-        if (
-            !response.ok
-        ) {
-
-            console.log(
-                `🔎 Bing：${keyword} → HTTP ${response.status}`
-            );
-
-            return [];
-        }
-
-        const html =
-            await response.text();
-
-        const urls: string[] = [];
-
-        const blocks =
-            html.match(
-                /<li[^>]*class=["'][^"']*b_algo[^"']*["'][^>]*>[\s\S]*?<\/li>/gi
-            ) || [];
-
-        for (
-            const block
-            of blocks
-        ) {
-
-            const match =
-                block.match(
-                    /<a[^>]+href=["']([^"']+)["']/i
-                );
-
-            if (
-                !match?.[1]
-            ) {
-                continue;
-            }
-
-            const url =
-                normalizeUrl(
-                    decodeHtml(
-                        match[1]
-                    )
-                );
-
-            if (
-                isValidSearchUrl(
-                    url
-                ) &&
-                !urls.includes(
-                    url
-                )
-            ) {
-
-                urls.push(
-                    url
-                );
-            }
-        }
-
-        console.log(
-            `🔎 Bing：${keyword} → ${urls.length}`
-        );
-
-        return urls.slice(
-            0,
-            20
-        );
-
-    } catch {
-
-        console.log(
-            `⚠️ Bing timeout：${keyword}`
-        );
-
-        return [];
-    }
-}
-
-// ============================================================
-// Google
-// ============================================================
-
-async function searchGoogle(
-    keyword: string
-): Promise<string[]> {
-
-    try {
-
-        const searchUrl =
-            `https://www.google.com/search?q=${encodeURIComponent(
-                keyword
-            )}&num=20&hl=zh-TW&gl=tw`;
-
-        const response =
-            await fetch(
-                searchUrl,
-                {
-                    headers: {
-
-                        "User-Agent":
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
-
-                        "Accept-Language":
-                            "zh-TW,zh;q=0.9,en;q=0.8"
-                    },
-
-                    cache:
-                        "no-store",
-
-                    signal:
-                        AbortSignal.timeout(
-                            8000
-                        )
-                }
-            );
-
-        if (
-            !response.ok
-        ) {
-
-            console.log(
-                `🔎 Google：${keyword} → HTTP ${response.status}`
-            );
-
-            return [];
-        }
-
-        const html =
-            await response.text();
-
-        const urls: string[] = [];
-
-        const matches =
-            html.match(
-                /<a[^>]+href=["']([^"']+)["']/gi
-            ) || [];
-
-        for (
-            const match
-            of matches
-        ) {
-
-            const found =
-                match.match(
-                    /href=["']([^"']+)["']/i
-                );
-
-            if (
-                !found?.[1]
-            ) {
-                continue;
-            }
-
-            let value =
-                decodeHtml(
-                    found[1]
-                );
-
-            if (
-                value.startsWith(
-                    "/url?q="
-                )
-            ) {
-
-                value =
-                    value
-                        .replace(
-                            "/url?q=",
-                            ""
-                        )
-                        .split(
-                            "&"
-                        )[0];
-            }
-
-            const url =
-                normalizeUrl(
-                    value
-                );
-
-            if (
-                isValidSearchUrl(
-                    url
-                ) &&
-                !urls.includes(
-                    url
-                )
-            ) {
-
-                urls.push(
-                    url
-                );
-            }
-        }
-
-        console.log(
-            `🔎 Google：${keyword} → ${urls.length}`
-        );
-
-        return urls.slice(
-            0,
-            20
-        );
-
-    } catch {
-
-        console.log(
-            `⚠️ Google timeout：${keyword}`
-        );
-
-        return [];
-    }
-}
-
-// ============================================================
-// DuckDuckGo
-// ============================================================
-
-async function searchDuckDuckGo(
-    keyword: string
-): Promise<string[]> {
-
-    try {
-
-        const searchUrl =
-            `https://html.duckduckgo.com/html/?q=${encodeURIComponent(
-                keyword
-            )}`;
-
-        const response =
-            await fetch(
-                searchUrl,
-                {
-                    headers: {
-
-                        "User-Agent":
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
-
-                        "Accept":
-                            "text/html"
-                    },
-
-                    cache:
-                        "no-store",
-
-                    signal:
-                        AbortSignal.timeout(
-                            8000
-                        )
-                }
-            );
-
-        if (
-            !response.ok
-        ) {
-
-            console.log(
-                `🔎 DuckDuckGo：${keyword} → HTTP ${response.status}`
-            );
-
-            return [];
-        }
-
-        const html =
-            await response.text();
-
-        const urls: string[] = [];
-
-        const matches =
-            html.match(
-                /<a[^>]+class=["'][^"']*result__a[^"']*["'][^>]+href=["']([^"']+)["']/gi
-            ) || [];
-
-        for (
-            const match
-            of matches
-        ) {
-
-            const found =
-                match.match(
-                    /href=["']([^"']+)["']/i
-                );
-
-            if (
-                !found?.[1]
-            ) {
-                continue;
-            }
-
-            let value =
-                decodeHtml(
-                    found[1]
-                );
-
-            if (
-                value.includes(
-                    "uddg="
-                )
-            ) {
-
-                try {
-
-                    const parsed =
-                        new URL(
-                            value
-                        );
-
-                    const target =
-                        parsed.searchParams.get(
-                            "uddg"
-                        );
-
-                    if (
-                        target
-                    ) {
-                        value =
-                            target;
-                    }
-
-                } catch {}
-            }
-
-            const url =
-                normalizeUrl(
-                    value
-                );
-
-            if (
-                isValidSearchUrl(
-                    url
-                ) &&
-                !urls.includes(
-                    url
-                )
-            ) {
-
-                urls.push(
-                    url
-                );
-            }
-        }
-
-        console.log(
-            `🔎 DuckDuckGo：${keyword} → ${urls.length}`
-        );
-
-        return urls.slice(
-            0,
-            20
-        );
-
-    } catch {
-
-        console.log(
-            `⚠️ DuckDuckGo timeout：${keyword}`
-        );
-
-        return [];
-    }
-}
-
-// ============================================================
-// 搜尋
-// Bing → Google → DDG
-//
-// 注意：
-// 不再使用 Yahoo
-// ============================================================
-
-async function searchWeb(
-    keyword: string
+    website: string,
+    keyword: string,
+    name: string,
+    address: string,
+    seed?: SeedEntry
 ) {
+    const home = await fetchWebsite(website);
+    let combinedHtml = home.html;
+    let finalUrl = home.finalUrl || website;
 
-    const all: string[] = [];
+    if (home.html) {
+        const donationLinks = extractDonationLinks(home.html, finalUrl || website).slice(0, 2);
 
-    // Bing
-    const bing =
-        await searchBing(
-            keyword
-        );
-
-    for (
-        const url
-        of bing
-    ) {
-
-        if (
-            !all.includes(
-                url
-            )
-        ) {
-
-            all.push(
-                url
-            );
+        const pages = await Promise.all(donationLinks.map((url) => fetchWebsite(url)));
+        for (const page of pages) {
+            if (page.html) combinedHtml += `\n${page.html}`;
         }
     }
 
-    // Google
-    if (
-        all.length < 8
-    ) {
+    const text = cleanHtml(combinedHtml).slice(0, 180000);
+    const donation = detectDonation(text);
+    const fundraising = detectFundraising(text);
+    const fullPay = detectFullPay(text);
+    const categories = categoryFromText(keyword, name, text, seed);
 
-        console.log(
-            "🔄 Bing 結果不足 → Google fallback：",
-            keyword
-        );
+    return {
+        finalUrl: normalizeUrl(finalUrl || website) || website,
+        text,
+        donation,
+        fundraising,
+        fullPay,
+        categories,
+        websiteFetchSuccess: Boolean(home.html),
+        fetchError: home.error,
+        address,
+    };
+}
 
-        const google =
-            await searchGoogle(
-                keyword
-            );
+// ============================================================
+// Result builders
+// ============================================================
 
-        for (
-            const url
-            of google
-        ) {
+function emptyDonation(): DonationResult {
+    return {
+        online: false,
+        hasOnlineDonation: false,
+        recurring: false,
+        hasRecurringDonation: false,
+        methods: [],
+        signals: [],
+    };
+}
 
-            if (
-                !all.includes(
-                    url
-                )
-            ) {
+function emptyFundraising(): FundraisingResult {
+    return {
+        hasFundraisingInfo: false,
+        number: "",
+        signals: [],
+    };
+}
 
-                all.push(
-                    url
-                );
-            }
-        }
-    }
+function governmentEntryToBaseResult(
+    entry: GovernmentEntry & { score?: number; _evidence?: string[] },
+    keyword: string,
+    seed?: SeedEntry
+): CharityResult {
+    const website = seed?.website || "";
+    const categories = seed?.categories?.length
+        ? seed.categories
+        : categoryFromText(keyword, entry.name, "", seed);
 
-    // DDG
-    if (
-        all.length < 8
-    ) {
+    const donation = emptyDonation();
+    const fundraising = emptyFundraising();
+    const physicalStore: PhysicalResult = {
+        hasPhysicalStore: Boolean(entry.address),
+        signals: entry.address ? ["政府名冊地址"] : [],
+    };
 
-        console.log(
-            "🔄 搜尋結果仍不足 → DuckDuckGo fallback：",
-            keyword
-        );
+    const governmentScore = entry.score || 0;
+    const priority = calculatePriority(donation, fundraising, website, governmentScore, false);
 
-        const ddg =
-            await searchDuckDuckGo(
-                keyword
-            );
+    return {
+        success: true,
+        type: "charity",
+        organizationName: entry.name,
+        name: entry.name,
+        url: website,
+        website,
+        category: categories[0] || "公益組織",
+        categories,
+        orgType: entry.type,
+        phone: seed?.phone || "",
+        address: seed?.address || entry.address,
+        donation,
+        onlineDonation: false,
+        recurringDonation: false,
+        physicalStore,
+        hasPhysicalStore: physicalStore.hasPhysicalStore,
+        fundraising,
+        fundraisingNumber: "",
+        paymentScore: 0,
+        physicalScore: physicalStore.hasPhysicalStore ? 10 : 0,
+        confidence: Math.min(92, 48 + Math.round(governmentScore / 2) + (website ? 10 : 0)),
+        priority,
+        cooperation: physicalStore.hasPhysicalStore ? ["實體據點"] : [],
+        recommendation: buildRecommendation(donation, fundraising, website, entry.address, false),
+        evidence: uniqueStrings([
+            `資料來源：${entry.source}`,
+            ...(entry._evidence || []),
+            entry.address ? `名冊地址：${entry.address}` : "",
+        ]).slice(0, 20),
+        fullPay: {
+            hasFullPay: false,
+            signals: [],
+            excludeFromSearch: false,
+        },
+        governmentSource: entry.source,
+        governmentMatchScore: governmentScore,
+        websiteFetchSuccess: false,
+    };
+}
 
-        for (
-            const url
-            of ddg
-        ) {
+function seedOnlyBaseResult(seed: SeedEntry, keyword: string): CharityResult {
+    const donation = emptyDonation();
+    const fundraising = emptyFundraising();
+    const physicalStore: PhysicalResult = {
+        hasPhysicalStore: Boolean(seed.address),
+        signals: seed.address ? ["已知聯絡地址"] : [],
+    };
 
-            if (
-                !all.includes(
-                    url
-                )
-            ) {
+    return {
+        success: true,
+        type: "charity",
+        organizationName: seed.name,
+        name: seed.name,
+        url: seed.website,
+        website: seed.website,
+        category: seed.categories[0] || getProfile(keyword)?.name || "公益組織",
+        categories: seed.categories,
+        orgType: "公益組織",
+        phone: seed.phone || "",
+        address: seed.address || "",
+        donation,
+        onlineDonation: false,
+        recurringDonation: false,
+        physicalStore,
+        hasPhysicalStore: physicalStore.hasPhysicalStore,
+        fundraising,
+        fundraisingNumber: "",
+        paymentScore: 0,
+        physicalScore: physicalStore.hasPhysicalStore ? 10 : 0,
+        confidence: 70,
+        priority: "中",
+        cooperation: [],
+        recommendation: "已知公益組織官方網站，正在以官網捐款能力作為主要開發判斷。",
+        evidence: ["已知公益組織官方網站"],
+        fullPay: {
+            hasFullPay: false,
+            signals: [],
+            excludeFromSearch: false,
+        },
+        governmentSource: "Local Verified Website Seed",
+        governmentMatchScore: 50,
+        websiteFetchSuccess: false,
+    };
+}
 
-                all.push(
-                    url
-                );
-            }
-        }
-    }
+async function enrichResult(base: CharityResult, keyword: string, seed?: SeedEntry): Promise<CharityResult> {
+    if (!base.website) return base;
 
-    // 最後再驗證一次
-    return all
-        .map(
-            normalizeUrl
-        )
-        .filter(
-            isValidSearchUrl
-        )
-        .slice(
-            0,
-            30
-        );
+    const analysis = await analyzeWebsite(
+        base.website,
+        keyword,
+        base.organizationName,
+        base.address,
+        seed
+    );
+
+    const donation = analysis.donation;
+    const fundraising = analysis.fundraising;
+    const fullPay = analysis.fullPay;
+    const physicalStore: PhysicalResult = {
+        hasPhysicalStore: Boolean(base.address),
+        signals: base.address ? ["政府名冊／已知地址"] : [],
+    };
+
+    const paymentScore = calculatePaymentScore(donation, fundraising);
+    const priority = calculatePriority(
+        donation,
+        fundraising,
+        analysis.finalUrl,
+        base.governmentMatchScore,
+        fullPay.hasFullPay
+    );
+
+    const cooperation: string[] = [];
+    if (donation.online) cooperation.push("線上捐款");
+    if (donation.recurring) cooperation.push("定期捐款");
+    if (physicalStore.hasPhysicalStore) cooperation.push("實體據點");
+
+    return {
+        ...base,
+        url: analysis.finalUrl || base.website,
+        website: analysis.finalUrl || base.website,
+        category: analysis.categories[0] || base.category,
+        categories: analysis.categories.length > 0 ? analysis.categories : base.categories,
+        donation,
+        onlineDonation: donation.online,
+        recurringDonation: donation.recurring,
+        fundraising,
+        fundraisingNumber: fundraising.number,
+        fullPay,
+        paymentScore,
+        priority,
+        cooperation,
+        recommendation: buildRecommendation(
+            donation,
+            fundraising,
+            analysis.finalUrl || base.website,
+            base.address,
+            fullPay.hasFullPay
+        ),
+        evidence: uniqueStrings([
+            ...base.evidence,
+            ...donation.signals,
+            ...donation.methods.map((method) => `捐款方式：${method}`),
+            ...fundraising.signals,
+            fundraising.number ? `勸募字號：${fundraising.number}` : "",
+            ...fullPay.signals.map((signal) => `全支付：${signal}`),
+        ]).slice(0, 20),
+        confidence: Math.min(
+            98,
+            base.confidence +
+                (analysis.websiteFetchSuccess ? 10 : 0) +
+                (donation.online ? 8 : 0) +
+                (fundraising.hasFundraisingInfo ? 5 : 0)
+        ),
+        websiteFetchSuccess: analysis.websiteFetchSuccess,
+    };
 }
 
 // ============================================================
 // POST
 // ============================================================
 
-export async function POST(
-    request: NextRequest
-) {
-
+export async function POST(request: NextRequest) {
     try {
+        const body = await request.json().catch(() => ({}));
+        const keyword = String(body?.keyword || "").trim();
 
-        const body =
-            await request.json();
-
-        const keyword =
-            String(
-                body?.keyword || ""
-            ).trim();
-
-        if (
-            !keyword
-        ) {
-
+        if (!keyword) {
             return NextResponse.json(
                 {
                     success: false,
-                    error:
-                        "請輸入公益類型"
+                    error: "請輸入公益類型",
+                    results: [],
                 },
-                {
-                    status: 400
-                }
+                { status: 400 }
             );
         }
 
-        console.log(
-            "🏛️ 公益搜尋：",
-            keyword
-        );
+        console.log("====================================");
+        console.log("Charity Search v4");
+        console.log("搜尋：", keyword);
+        console.log("來源：內政部政府開放資料 + 已知官方網站 + 官網分析");
+        console.log("Tavily：0");
+        console.log("OpenAI：0");
 
-        // ========================================================
-        // 搜尋詞
-        //
-        // 動物特別加強
-        // ========================================================
+        const government = await loadGovernmentEntries();
+        console.log("政府名冊總數：", government.entries.length);
 
-        let searchKeywords: string[];
+        const governmentCandidates = findGovernmentCandidates(government.entries, keyword);
+        console.log("政府候選：", governmentCandidates.length);
 
-        if (
-            keyword.includes(
-                "動物"
-            ) ||
-            keyword.includes(
-                "寵物"
-            ) ||
-            keyword.includes(
-                "動保"
-            )
-        ) {
+        const seeds = matchingSeeds(keyword);
+        console.log("已知官網 Seed：", seeds.length);
 
-            searchKeywords = [
+        const resultMap = new Map<string, { result: CharityResult; seed?: SeedEntry }>();
 
-                `${keyword} 台灣 動保`,
-                `${keyword} 台灣 流浪動物`,
-                `${keyword} 台灣 動物保護`,
-                `${keyword} 台灣 動物協會`,
-                `${keyword} 台灣 動物基金會`,
-                `${keyword} 台灣 動物之家`,
-                `${keyword} 台灣 狗 貓`,
-                `${keyword} 台灣 NGO`,
-                `${keyword} 台灣 NPO`,
-                `${keyword} 台灣 公益`,
-                `${keyword} 台灣 捐款`,
-                `${keyword} 台灣 捐贈`
-
-            ];
-
-        } else {
-
-            searchKeywords = [
-
-                `${keyword} 台灣 基金會`,
-                `${keyword} 台灣 協會`,
-                `${keyword} 台灣 公益`,
-                `${keyword} 台灣 公益 捐款`,
-                `${keyword} 台灣 慈善`,
-                `${keyword} 台灣 NGO`,
-                `${keyword} 台灣 NPO`,
-                `${keyword} 台灣 社團法人`,
-                `${keyword} 台灣 財團法人`,
-                `${keyword} 台灣 捐款`
-
-            ];
+        // 1) Government roster candidates
+        for (const candidate of governmentCandidates) {
+            const seed = findSeedForGovernmentEntry(candidate);
+            const result = governmentEntryToBaseResult(candidate, keyword, seed);
+            const key = normalizeName(result.organizationName) || result.organizationName;
+            resultMap.set(key, { result, seed });
         }
 
-        console.log(
-            "🔎 公益搜尋詞：",
-            searchKeywords
-        );
+        // 2) Known verified websites not found in government roster result slice
+        for (const seed of seeds) {
+            const key = normalizeName(seed.name) || seed.name;
+            const existing = resultMap.get(key);
 
-        // ========================================================
-        // 搜尋 URL
-        // ========================================================
-
-        const allUrls: string[] = [];
-
-        // 每次最多跑 8 個搜尋詞
-        //
-        // 不需要 20 個全部跑。
-        // 正式站比較穩。
-        for (
-            const searchKeyword
-            of searchKeywords.slice(
-                0,
-                8
-            )
-        ) {
-
-            console.log(
-                "搜尋：",
-                searchKeyword
-            );
-
-            const urls =
-                await searchWeb(
-                    searchKeyword
-                );
-
-            for (
-                const url
-                of urls
-            ) {
-
-                if (
-                    !allUrls.includes(
-                        url
-                    )
-                ) {
-
-                    allUrls.push(
-                        url
-                    );
+            if (existing) {
+                if (!existing.result.website) {
+                    existing.result.website = seed.website;
+                    existing.result.url = seed.website;
                 }
+                existing.seed = seed;
+                continue;
             }
 
-            // 有足夠候選就停止
-            if (
-                allUrls.length >= 30
-            ) {
-
-                break;
-            }
+            resultMap.set(key, {
+                result: seedOnlyBaseResult(seed, keyword),
+                seed,
+            });
         }
 
-        // ========================================================
-        // 加入 Seed
-        //
-        // 特別是動物搜尋
-        // ========================================================
+        let working = Array.from(resultMap.values());
 
-        if (
-            keyword.includes(
-                "動物"
-            ) ||
-            keyword.includes(
-                "寵物"
-            ) ||
-            keyword.includes(
-                "動保"
-            )
-        ) {
-
-            for (
-                const seed
-                of taiwanAnimalSeeds
-            ) {
-
-                const normalized =
-                    normalizeUrl(
-                        seed
-                    );
-
-                if (
-                    normalized &&
-                    !allUrls.includes(
-                        normalized
-                    )
-                ) {
-
-                    allUrls.push(
-                        normalized
-                    );
-                }
-            }
-        }
-
-        console.log(
-            "🔎 原始候選：",
-            allUrls.length
-        );
-
-        // ========================================================
-        // 候選
-        // ========================================================
-
-        const candidates =
-            allUrls
-                .map(
-                    normalizeUrl
-                )
-                .filter(
-                    isValidSearchUrl
-                )
-                .filter(
-                    url =>
-                        isTaiwanDomain(
-                            url
-                        ) ||
-                        taiwanAnimalSeeds.includes(
-                            url
-                        )
-                )
-                .slice(
-                    0,
-                    30
-                );
-
-        console.log(
-            "🏛️ 台灣候選網站：",
-            candidates.length
-        );
-
-        // ========================================================
-        // 分析
-        //
-        // 限制並發數，正式站比較穩
-        // ========================================================
-
-        const results: CharityAnalysis[] = [];
-
-        for (
-            let i = 0;
-            i < candidates.length;
-            i += 5
-        ) {
-
-            const batch =
-                candidates.slice(
-                    i,
-                    i + 5
-                );
-
-            const analyzed =
-                await Promise.all(
-                    batch.map(
-                        url =>
-                            analyzeWebsite(
-                                url
-                            )
-                    )
-                );
-
-            for (
-                const result
-                of analyzed
-            ) {
-
-                if (
-                    result
-                ) {
-
-                    results.push(
-                        result
-                    );
-                }
-            }
-        }
-
-        // ========================================================
-        // 去重
-        // ========================================================
-
-        const uniqueResults =
-            new Map<
-                string,
-                CharityAnalysis
-            >();
-
-        for (
-            const result
-            of results
-        ) {
-
-            try {
-
-                const hostname =
-                    new URL(
-                        result.url
-                    )
-                        .hostname
-                        .replace(
-                            /^www\./,
-                            ""
-                        )
-                        .toLowerCase();
-
-                if (
-                    !uniqueResults.has(
-                        hostname
-                    )
-                ) {
-
-                    uniqueResults.set(
-                        hostname,
-                        result
-                    );
-                }
-
-            } catch {}
-        }
-
-        const finalResults =
-            Array.from(
-                uniqueResults.values()
-            );
-
-        // ========================================================
-        // 最終排序
-        //
-        // 1. 動物分類
-        // 2. 金流
-        // 3. 實體
-        // 4. 信心
-        // ========================================================
-
-        finalResults.sort(
-            (a, b) => {
-
-                const animalA =
-                    a.categories.includes(
-                        "動物／流浪動物"
-                    )
-                        ? 100
-                        : 0;
-
-                const animalB =
-                    b.categories.includes(
-                        "動物／流浪動物"
-                    )
-                        ? 100
-                        : 0;
-
-                const scoreA =
-                    animalA +
-                    a.paymentScore +
-                    a.physicalScore +
-                    a.confidence;
-
-                const scoreB =
-                    animalB +
-                    b.paymentScore +
-                    b.physicalScore +
-                    b.confidence;
-
-                return (
-                    scoreB -
-                    scoreA
-                );
-            }
-        );
-
-        console.log(
-            "✅ 最終結果：",
-            finalResults.length
-        );
-
-        return NextResponse.json({
-
-            success: true,
-
-            keyword,
-
-            count:
-                finalResults.length,
-
-            results:
-                finalResults
-
+        // Sort before website analysis so the most relevant / actionable leads get analyzed first.
+        working.sort((a, b) => {
+            const websiteA = a.result.website ? 20 : 0;
+            const websiteB = b.result.website ? 20 : 0;
+            const scoreA = a.result.governmentMatchScore + websiteA;
+            const scoreB = b.result.governmentMatchScore + websiteB;
+            return scoreB - scoreA;
         });
 
-    } catch (error) {
+        const toAnalyze = working
+            .filter((item) => Boolean(item.result.website))
+            .slice(0, WEBSITE_ANALYZE_LIMIT);
 
-        console.error(
-            "❌ Charity Search API Error:",
-            error
-        );
+        const analyzedMap = new Map<string, CharityResult>();
+
+        for (let i = 0; i < toAnalyze.length; i += WEBSITE_BATCH_SIZE) {
+            const batch = toAnalyze.slice(i, i + WEBSITE_BATCH_SIZE);
+            const analyzed = await Promise.all(
+                batch.map((item) => enrichResult(item.result, keyword, item.seed))
+            );
+
+            for (const item of analyzed) {
+                analyzedMap.set(
+                    normalizeName(item.organizationName) || item.organizationName,
+                    item
+                );
+            }
+
+            console.log(
+                `官網分析 ${Math.min(i + WEBSITE_BATCH_SIZE, toAnalyze.length)}/${toAnalyze.length}`
+            );
+        }
+
+        const finalPool = working.map(({ result }) => {
+            const key = normalizeName(result.organizationName) || result.organizationName;
+            return analyzedMap.get(key) || result;
+        });
+
+        finalPool.sort((a, b) => {
+            const priorityScore = { 高: 40, 中: 20, 低: 0 };
+            const actionA =
+                priorityScore[a.priority] +
+                a.paymentScore * 2 +
+                (a.website ? 12 : 0) +
+                Math.min(a.governmentMatchScore, 80) -
+                (a.fullPay.hasFullPay ? 30 : 0);
+            const actionB =
+                priorityScore[b.priority] +
+                b.paymentScore * 2 +
+                (b.website ? 12 : 0) +
+                Math.min(b.governmentMatchScore, 80) -
+                (b.fullPay.hasFullPay ? 30 : 0);
+            return actionB - actionA;
+        });
+
+        const finalResults = finalPool.slice(0, FINAL_LIMIT);
+
+        console.log("最終結果：", finalResults.length);
+        console.log("其中有官網：", finalResults.filter((item) => item.website).length);
+        console.log("其中已分析官網：", finalResults.filter((item) => item.websiteFetchSuccess).length);
+        console.log("政府資料警告：", government.warnings.length);
+        console.log("====================================");
+
+        return NextResponse.json({
+            success: true,
+            keyword,
+            version: "charity-v4",
+            searchEngine: "Government Open Data + Website Analysis",
+            searchMode: "government-roster-charity-discovery",
+            tavily: false,
+            openAI: false,
+            creditsUsed: 0,
+            governmentCount: government.entries.length,
+            candidateCount: governmentCandidates.length,
+            seedCount: seeds.length,
+            analyzedWebsiteCount: finalResults.filter((item) => item.websiteFetchSuccess).length,
+            count: finalResults.length,
+            warnings: government.warnings,
+            results: finalResults,
+        });
+    } catch (error) {
+        console.error("❌ Charity Search API Error：", error);
 
         return NextResponse.json(
             {
                 success: false,
-
-                error:
-                    error instanceof Error
-                        ? error.message
-                        : "公益搜尋失敗"
+                error: error instanceof Error ? error.message : "公益搜尋失敗",
+                results: [],
             },
-            {
-                status: 500
-            }
+            { status: 500 }
         );
     }
 }
