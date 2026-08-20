@@ -59,6 +59,17 @@ function normalizePlatformName(name: string): string {
         shopline: "shopline",
 
         woocommerce: "woocommerce",
+
+        "91app": "91app",
+        "91 app": "91app",
+
+        sysfeather: "sysfeather",
+        "sys feather": "sysfeather",
+
+        cyberbiz: "cyberbiz",
+
+        meepshop: "meepshop",
+        "meep shop": "meepshop",
     };
 
     return aliases[value] || value;
@@ -85,6 +96,11 @@ function formatPlatformName(name: string): string {
         shopify: "Shopify",
         shopline: "SHOPLINE",
         woocommerce: "WooCommerce",
+
+        "91app": "91APP",
+        sysfeather: "Sysfeather",
+        cyberbiz: "CYBERBIZ",
+        meepshop: "meepShop",
     };
 
     return displayNames[normalized] || name || "Unknown";
@@ -206,6 +222,66 @@ const fingerprints = [
             "shoplineapp.com",
             "shopline.com",
             "shopline.cloud",
+        ],
+        weight: 10,
+    },
+
+    {
+        name: "91app",
+        keywords: [
+            "static.91app.com",
+            "static.91app.com/design-cloud",
+            "design-cloud/static/usersite",
+            "usersite/resource/prod/latest/bootstrap.js",
+            "usersite/resource/prod/latest/vendors.js",
+            "91app.com",
+        ],
+        weight: 10,
+    },
+
+    {
+        name: "sysfeather",
+        keywords: [
+            "sysfeather",
+            "plsysfeather",
+            "'agent':'plsysfeather'",
+            "\"agent\":\"plsysfeather\"",
+            "facebook.com/sysfeather",
+        ],
+        weight: 10,
+    },
+
+    {
+        name: "cyberbiz",
+        keywords: [
+            "cyberbiz.io",
+            "cyberbiz.co",
+            "store.cyberbiz.co",
+            "cyberbiz google tag manager",
+            "window.cyberbiz_pagecontext",
+            "cyberbiz_pagecontext",
+            "window.cyberbiz_appscriptsettings",
+            "cyberbiz_appscriptsettings",
+            "window.cyberbiz",
+            "eticket_term_of_service",
+            "cyberbiz 电子票券服务使用说明",
+            "cyberbiz 電子票券服務使用說明",
+        ],
+        weight: 10,
+    },
+
+    {
+        name: "meepshop",
+        keywords: [
+            "meepshop.com",
+            "meepcloud.com",
+            "cdn.meepshop.com",
+            "img.meepshop.com",
+            "meepshop-meep-ui",
+            "meepshop-meep-ui__image",
+            "meepshop-meep-ui__image-img-index__root",
+            "data-testid=\"/products/",
+            "data-testid='/products/",
         ],
         weight: 10,
     },
@@ -577,7 +653,31 @@ function htmlToText(html: string): string {
 
 function normalizeUrl(url: string): string {
     try {
-        let value = url.trim();
+        let value = String(url || "").trim();
+
+        if (!value) {
+            return "";
+        }
+
+        // 防止錯誤訊息、非網址文字被當成 URL
+        const invalidTextSignals = [
+            "網站無法讀取",
+            "HTTP 403",
+            "HTTP 404",
+            "HTTP 500",
+            "fetch failed",
+            "Failed to fetch",
+            "ERR_INVALID_URL",
+            "Invalid URL",
+        ];
+
+        if (
+            invalidTextSignals.some((signal) =>
+                value.toLowerCase().includes(signal.toLowerCase())
+            )
+        ) {
+            return "";
+        }
 
         if (!/^https?:\/\//i.test(value)) {
             value = `https://${value}`;
@@ -585,13 +685,27 @@ function normalizeUrl(url: string): string {
 
         const parsed = new URL(value);
 
+        if (
+            parsed.protocol !== "http:" &&
+            parsed.protocol !== "https:"
+        ) {
+            return "";
+        }
+
+        if (
+            !parsed.hostname ||
+            !parsed.hostname.includes(".")
+        ) {
+            return "";
+        }
+
         return (
             parsed.protocol +
             "//" +
             parsed.hostname
         );
     } catch {
-        return url;
+        return "";
     }
 }
 
@@ -1727,7 +1841,7 @@ export async function POST(
             await req.json();
 
         const rawUrl =
-            body.url?.trim();
+            String(body?.url || "").trim();
 
         if (!rawUrl) {
 
@@ -1748,6 +1862,23 @@ export async function POST(
             );
 
         // ====================================================
+        // URL 防呆
+        // ====================================================
+
+        if (!url) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    error: "網址格式不正確，請輸入有效的 http / https 網址。",
+                    input: rawUrl,
+                },
+                {
+                    status: 400,
+                }
+            );
+        }
+
+        // ====================================================
         // 排除大型網站
         // ====================================================
 
@@ -1755,16 +1886,16 @@ export async function POST(
             isExcluded(url)
         ) {
 
-            return NextResponse.json({
-
-                success: false,
-
-                error:
-                    "此網站屬於排除網站，不進行分析。",
-
-                url,
-
-            });
+            return NextResponse.json(
+                {
+                    success: false,
+                    error: "此網站屬於排除網站，不進行分析。",
+                    url,
+                },
+                {
+                    status: 400,
+                }
+            );
 
         }
 
@@ -1804,18 +1935,24 @@ export async function POST(
             );
 
         if (!response.ok) {
-
-            return NextResponse.json({
-
-                success: false,
-
-                error:
-                    `網站無法讀取 HTTP ${response.status}`,
-
+            console.warn(
+                "⚠️ 網站讀取失敗：",
                 url,
+                `HTTP ${response.status}`
+            );
 
-            });
-
+            return NextResponse.json(
+                {
+                    success: false,
+                    error: `網站無法讀取 HTTP ${response.status}`,
+                    url,
+                    fetchError: `HTTP ${response.status}`,
+                    websiteFetchSuccess: false,
+                },
+                {
+                    status: response.status === 403 ? 200 : 400,
+                }
+            );
         }
 
         const html =
@@ -2052,6 +2189,9 @@ export async function POST(
 
             url,
 
+            websiteFetchSuccess: true,
+            fetchError: "",
+
             brand,
 
             platform,
@@ -2156,16 +2296,18 @@ export async function POST(
             error
         );
 
-        return NextResponse.json({
-
-            success: false,
-
-            error:
-                error instanceof Error
-                    ? error.message
-                    : "網站分析發生錯誤",
-
-        });
+        return NextResponse.json(
+            {
+                success: false,
+                error:
+                    error instanceof Error
+                        ? error.message
+                        : "網站分析發生錯誤",
+            },
+            {
+                status: 500,
+            }
+        );
 
     }
 }
