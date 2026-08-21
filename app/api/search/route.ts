@@ -80,16 +80,16 @@ type IndustryAnalysis = {
 
 const SEARCH_BATCH_SIZE = 2;
 const MAX_TAVILY_RESULTS = 20;
-const MAX_QUERY_COUNT_DEFAULT = 10;
-const MAX_QUERY_COUNT_BROAD = 14;
+const MAX_QUERY_COUNT_DEFAULT = 8;
+const MAX_QUERY_COUNT_BROAD = 10;
 const MIN_QUERIES_BEFORE_STOP_DEFAULT = 4;
 const MIN_QUERIES_BEFORE_STOP_BROAD = 6;
 const TARGET_CANDIDATES_DEFAULT = 55;
 const TARGET_CANDIDATES_BROAD = 78;
-const MAX_CANDIDATES_TO_ANALYZE = 96;
+const MAX_CANDIDATES_TO_ANALYZE = 36;
 const ANALYZE_BATCH_SIZE = 12;
 const MAX_ANALYZED_RESULTS = 42;
-const FINAL_RESULT_LIMIT = 30;
+const FINAL_RESULT_LIMIT = 24;
 const SEARCH_CACHE_TTL = 10 * 60 * 1000;
 const PAGE_CACHE_TTL = 30 * 60 * 1000;
 const OSM_CACHE_TTL = 6 * 60 * 60 * 1000;
@@ -2053,7 +2053,7 @@ async function callTavily(
                     Authorization: `Bearer ${apiKey}`,
                 },
                 body: JSON.stringify(body),
-                signal: AbortSignal.timeout(55000),
+                signal: AbortSignal.timeout(15000),
             }
         );
 
@@ -3627,12 +3627,12 @@ async function exportLeadsToGoogleSheet(
             body: JSON.stringify({
                 secret,
                 source: "PayLead Finder",
-                version: "v13",
+                version: "v13-prod-safe",
                 keyword,
                 exportedAt,
                 leads,
             }),
-            signal: AbortSignal.timeout(12000),
+            signal: AbortSignal.timeout(8000),
             cache: "no-store",
         });
 
