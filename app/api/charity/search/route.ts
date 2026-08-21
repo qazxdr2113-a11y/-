@@ -212,7 +212,7 @@ async function exportCharitiesToGoogleSheet(
                             destination:
                                 "charity",
                             version:
-                                "charity-v3.2-google-sheet",
+                                "charity-v3.3-prod-safe",
                             keyword,
                             exportedAt,
                             leads,
@@ -391,12 +391,12 @@ const REGISTRY_BASE = "https://sasw.mohw.gov.tw";
 const REGISTRY_LIST_PATH = "/app39/fundgroup/fundgroupIndex";
 const REGISTRY_DETAIL_PATH = "/app39/fundgroup/fundgroupDetails";
 
-const MAX_REGISTRY_TERMS = 6;
-const MAX_REGISTRY_CANDIDATES = 54;
-const MAX_RESULTS = 30;
-const DETAIL_BATCH_SIZE = 8;
-const WEBSITE_BATCH_SIZE = 6;
-const FETCH_TIMEOUT_MS = 12000;
+const MAX_REGISTRY_TERMS = 4;
+const MAX_REGISTRY_CANDIDATES = 28;
+const MAX_RESULTS = 20;
+const DETAIL_BATCH_SIZE = 10;
+const WEBSITE_BATCH_SIZE = 8;
+const FETCH_TIMEOUT_MS = 7000;
 const REGISTRY_CACHE_TTL = 6 * 60 * 60 * 1000;
 const DETAIL_CACHE_TTL = 12 * 60 * 60 * 1000;
 const WEBSITE_CACHE_TTL = 30 * 60 * 1000;
@@ -1051,7 +1051,7 @@ async function fetchWebsiteCached(url: string) {
         return { html: cached.html, finalUrl: normalized, error: "" };
     }
 
-    const response = await fetchHtml(normalized, 10000);
+    const response = await fetchHtml(normalized, 6500);
 
     if (response.html) {
         websiteCache.set(normalized, {
@@ -1084,7 +1084,7 @@ function extractDonationLinks(html: string, baseUrl: string) {
             if (normalized && !links.includes(normalized)) links.push(normalized);
         } catch {}
 
-        if (links.length >= 2) break;
+        if (links.length >= 1) break;
     }
 
     return links;
@@ -1426,7 +1426,7 @@ export async function POST(request: NextRequest) {
         }
 
         console.log("====================================");
-        console.log("Charity Search v3.1");
+        console.log("Charity Search v3.3 Prod Safe");
         console.log("搜尋：", keyword);
         console.log("來源：衛福部公益勸募管理系統 + 官網分析");
         console.log("Tavily：0");
@@ -1464,7 +1464,7 @@ export async function POST(request: NextRequest) {
 
             analyzed.push(...results);
 
-            if (analyzed.length >= MAX_RESULTS + 12) break;
+            if (analyzed.length >= MAX_RESULTS + 6) break;
         }
 
         const category = getMatchingCategory(keyword);
@@ -1523,7 +1523,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({
             success: true,
             keyword,
-            version: "charity-v3.2-google-sheet",
+            version: "charity-v3.3-prod-safe",
             searchEngine: "MOHW Registry",
             source,
             tavily: false,
