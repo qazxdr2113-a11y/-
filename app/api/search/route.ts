@@ -97,208 +97,7 @@ const MAX_OSM_RESULTS = 140;
 const OVERPASS_TIMEOUT_MS = 22000;
 
 // ============================================================
-// Platform Fingerprints
-// ============================================================
-
-const fingerprints = [
-    {
-        name: "gogoshop",
-        keywords: [
-            "gogoshop.cloud",
-            "cdn.gogoshop.cloud",
-            "img.gogoshop.cloud",
-        ],
-    },
-
-    {
-        name: "qdm",
-        keywords: [
-            "qdm.cloud",
-            "cdn.qdm.cloud",
-            "image-cdn.qdm.cloud",
-            "image-cdn-flare.qdm.cloud",
-            "qdm_user_uuid",
-            "qdmppid",
-        ],
-    },
-
-    {
-        name: "easystore",
-        keywords: [
-            "easystore.co",
-            "store-themes.easystore.co",
-            "apps.easystore.co",
-            "resources.easystore.co",
-            "easystore-section-header",
-        ],
-    },
-
-    {
-        name: "開店123",
-        keywords: [
-            "shop123.com.tw",
-            "fs1.shop123.com.tw",
-            "shop123.com",
-        ],
-    },
-
-    {
-        name: "waca",
-        keywords: [
-            "waca.net",
-            "waca.tw",
-        ],
-    },
-
-    {
-        name: "liteshop",
-        keywords: [
-            "liteshop.tw",
-            "liteshop.com.tw",
-        ],
-    },
-
-    {
-        name: "showmore",
-        keywords: [
-            "showmore.com.tw",
-            "showmore.com",
-        ],
-    },
-
-    {
-        name: "尚峪",
-        keywords: [
-            "尚峪",
-        ],
-    },
-
-    {
-        name: "環匯亞太",
-        keywords: [
-            "global payments",
-            "globalpayments",
-        ],
-    },
-
-    {
-        name: "shopify",
-        keywords: [
-            "cdn.shopify.com",
-            "myshopify.com",
-            "shopify.theme",
-            "shopify-section",
-        ],
-    },
-
-    {
-        name: "shopline",
-        keywords: [
-            "shoplineapp.com",
-            "shopline.com",
-            "shopline.cloud",
-        ],
-    },
-
-    // ========================================================
-    // 91APP
-    // ========================================================
-
-    {
-        name: "91app",
-        keywords: [
-            "static.91app.com",
-            "static.91app.com/design-cloud",
-            "design-cloud/static/usersite",
-            "usersite/resource/prod/latest/bootstrap.js",
-            "usersite/resource/prod/latest/vendors.js",
-            "91app.com",
-        ],
-    },
-
-    // ========================================================
-    // 矽羽 Sysfeather
-    // ========================================================
-
-    {
-        name: "sysfeather",
-        keywords: [
-            "sysfeather",
-            "plsysfeather",
-            "'agent':'plsysfeather'",
-            "\"agent\":\"plsysfeather\"",
-            "facebook.com/sysfeather",
-        ],
-    },
-
-    {
-        name: "woocommerce",
-        keywords: [
-            "woocommerce-layout",
-            "woocommerce-js",
-            "wc-cart-fragments",
-            "wp-content/plugins/woocommerce",
-        ],
-    },
-
-    // ========================================================
-    // CYBERBIZ
-    // ========================================================
-
-    {
-        name: "cyberbiz",
-        keywords: [
-            // 原始網域指紋
-            "cyberbiz.io",
-            "cyberbiz.co",
-            "store.cyberbiz.co",
-
-            // 強指紋
-            "cyberbiz google tag manager",
-            "window.cyberbiz_pagecontext",
-            "cyberbiz_pagecontext",
-            "window.cyberbiz_appscriptsettings",
-            "cyberbiz_appscriptsettings",
-            "window.cyberbiz",
-
-            // 電子票券相關
-            "eticket_term_of_service",
-            "cyberbiz 电子票券服务使用说明",
-            "cyberbiz 電子票券服務使用說明",
-        ],
-    },
-
-    // ========================================================
-    // meepShop
-    // ========================================================
-
-    {
-        name: "meepshop",
-        keywords: [
-            // 原始指紋
-            "meepshop.com",
-            "meepcloud.com",
-            "cdn.meepshop.com",
-
-            // 新增強指紋
-            "img.meepshop.com",
-            "meepshop-meep-ui",
-            "meepshop-meep-ui__image",
-            "meepshop-meep-ui__image-img-index__root",
-
-            // 輔助指紋
-            "data-testid=\"/products/",
-            "data-testid='/products/",
-        ],
-    },
-];
-
-// ============================================================
 // Cooperation Platforms
-//
-// 只有「全支付目前可直接合作的開店平台」放這裡。
-// 91APP / Sysfeather / Cyberbiz / meepShop 目前只做辨識，
-// 不會因為被辨識到就標記成「可合作」。
 // ============================================================
 
 const cooperationPlatforms = [
@@ -314,8 +113,113 @@ const cooperationPlatforms = [
 ];
 
 // ============================================================
-// Industry Profiles
+// Platform Fingerprints
+// ============================================================
 
+const fingerprints = [
+    {
+        name: "gogoshop",
+        keywords: [
+            "gogoshop.cloud",
+            "cdn.gogoshop.cloud",
+            "img.gogoshop.cloud",
+        ],
+    },
+    {
+        name: "qdm",
+        keywords: [
+            "qdm.cloud",
+            "cdn.qdm.cloud",
+            "image-cdn.qdm.cloud",
+            "image-cdn-flare.qdm.cloud",
+            "qdm_user_uuid",
+            "qdmppid",
+        ],
+    },
+    {
+        name: "easystore",
+        keywords: [
+            "easystore.co",
+            "store-themes.easystore.co",
+            "apps.easystore.co",
+            "resources.easystore.co",
+            "easystore-section-header",
+        ],
+    },
+    {
+        name: "開店123",
+        keywords: [
+            "shop123.com.tw",
+            "fs1.shop123.com.tw",
+            "shop123.com",
+        ],
+    },
+    {
+        name: "waca",
+        keywords: ["waca.net", "waca.tw"],
+    },
+    {
+        name: "liteshop",
+        keywords: ["liteshop.tw", "liteshop.com.tw"],
+    },
+    {
+        name: "showmore",
+        keywords: ["showmore.com.tw", "showmore.com"],
+    },
+    {
+        name: "尚峪",
+        keywords: ["尚峪"],
+    },
+    {
+        name: "環匯亞太",
+        keywords: ["global payments", "globalpayments"],
+    },
+    {
+        name: "shopify",
+        keywords: [
+            "cdn.shopify.com",
+            "myshopify.com",
+            "shopify.theme",
+            "shopify-section",
+        ],
+    },
+    {
+        name: "shopline",
+        keywords: [
+            "shoplineapp.com",
+            "shopline.com",
+            "shopline.cloud",
+        ],
+    },
+    {
+        name: "woocommerce",
+        keywords: [
+            "woocommerce-layout",
+            "woocommerce-js",
+            "wc-cart-fragments",
+            "wp-content/plugins/woocommerce",
+        ],
+    },
+    {
+        name: "cyberbiz",
+        keywords: [
+            "cyberbiz.io",
+            "cyberbiz.co",
+            "store.cyberbiz.co",
+        ],
+    },
+    {
+        name: "meepshop",
+        keywords: [
+            "meepshop.com",
+            "meepcloud.com",
+            "cdn.meepshop.com",
+        ],
+    },
+];
+
+// ============================================================
+// Industry Profiles
 // ============================================================
 
 const industryProfiles: IndustryProfile[] = [
@@ -2149,7 +2053,7 @@ async function callTavily(
                     Authorization: `Bearer ${apiKey}`,
                 },
                 body: JSON.stringify(body),
-                signal: AbortSignal.timeout(15000),
+                signal: AbortSignal.timeout(55000),
             }
         );
 
@@ -3625,6 +3529,177 @@ async function analyzeCandidate(candidate: Candidate, keyword: string) {
 // POST
 // ============================================================
 
+
+// ============================================================
+// Google Sheet Auto Export (fail-open)
+// ============================================================
+
+type GoogleSheetExportResult = {
+    enabled: boolean;
+    success: boolean;
+    exportedCount: number;
+    skippedCount?: number;
+    error?: string;
+};
+
+async function exportLeadsToGoogleSheet(
+    keyword: string,
+    results: any[]
+): Promise<GoogleSheetExportResult> {
+    const webhookUrl = String(
+        process.env.GOOGLE_SHEET_WEBHOOK_URL || ""
+    ).trim();
+
+    const secret = String(
+        process.env.GOOGLE_SHEET_WEBHOOK_SECRET || ""
+    ).trim();
+
+    // 沒設定就完全不影響既有搜尋流程。
+    if (!webhookUrl) {
+        return {
+            enabled: false,
+            success: false,
+            exportedCount: 0,
+        };
+    }
+
+    if (!Array.isArray(results) || results.length === 0) {
+        return {
+            enabled: true,
+            success: true,
+            exportedCount: 0,
+        };
+    }
+
+    const exportedAt = new Date().toISOString();
+
+    const leads = results.map((item: any) => ({
+        exportedAt,
+        keyword,
+        brand: String(item?.brand || item?.title || "").trim(),
+        title: String(item?.title || "").trim(),
+        url: String(item?.url || "").trim(),
+        description: String(item?.description || "").trim(),
+        platform: String(item?.platform || "Unknown").trim(),
+        cooperation: String(item?.cooperation || "").trim(),
+        recommendation: String(item?.recommendation || "").trim(),
+
+        hasPhysicalStore:
+            Boolean(item?.physicalStore?.hasPhysicalStore),
+
+        physicalSignals:
+            Array.isArray(item?.physicalStore?.signals)
+                ? item.physicalStore.signals.join(" | ")
+                : "",
+
+        merchantScore: Number(item?.merchantScore || 0),
+        paymentScore: Number(item?.paymentScore || 0),
+        physicalScore: Number(item?.physicalScore || 0),
+        relevanceScore: Number(item?.relevanceScore || 0),
+        industryScore: Number(item?.industryScore || 0),
+        leadScore: Number(item?.leadScore || 0),
+
+        industryTier: String(item?.industryTier || "").trim(),
+        hasPaymentNeed: Boolean(item?.hasPaymentNeed),
+
+        merchantSignals:
+            Array.isArray(item?.merchantSignals)
+                ? item.merchantSignals.join(" | ")
+                : "",
+
+        paymentSignals:
+            Array.isArray(item?.paymentSignals)
+                ? item.paymentSignals.join(" | ")
+                : "",
+
+        industrySignals:
+            Array.isArray(item?.industrySignals)
+                ? item.industrySignals.join(" | ")
+                : "",
+    }));
+
+    try {
+        const response = await fetch(webhookUrl, {
+            method: "POST",
+            headers: {
+                "Content-Type": "text/plain;charset=utf-8",
+            },
+            body: JSON.stringify({
+                secret,
+                source: "PayLead Finder",
+                version: "v13",
+                keyword,
+                exportedAt,
+                leads,
+            }),
+            signal: AbortSignal.timeout(12000),
+            cache: "no-store",
+        });
+
+        const responseText = await response.text();
+
+        if (!response.ok) {
+            throw new Error(
+                `Google Sheet HTTP ${response.status}: ` +
+                responseText.slice(0, 300)
+            );
+        }
+
+        let data: any = {};
+
+        try {
+            data = JSON.parse(responseText);
+        } catch {
+            // Apps Script 偶爾可能回純文字；只要 HTTP 2xx 就視為已送達。
+            data = {};
+        }
+
+        const exportedCount =
+            typeof data?.exportedCount === "number"
+                ? data.exportedCount
+                : leads.length;
+
+        const skippedCount =
+            typeof data?.skippedCount === "number"
+                ? data.skippedCount
+                : undefined;
+
+        console.log(
+            "✅ Google Sheet Export：",
+            exportedCount,
+            skippedCount !== undefined
+                ? `Skipped：${skippedCount}`
+                : ""
+        );
+
+        return {
+            enabled: true,
+            success: true,
+            exportedCount,
+            skippedCount,
+        };
+    } catch (error) {
+        const message =
+            error instanceof Error
+                ? error.message
+                : "Google Sheet 匯出失敗";
+
+        // Fail-open：匯出失敗不影響搜尋結果。
+        console.error(
+            "⚠️ Google Sheet Export failed：",
+            message
+        );
+
+        return {
+            enabled: true,
+            success: false,
+            exportedCount: 0,
+            error: message,
+        };
+    }
+}
+
+
 export async function POST(req: Request) {
     try {
         const body = await req.json();
@@ -3820,6 +3895,13 @@ export async function POST(req: Request) {
         console.log("Tavily Credits：", creditsUsed);
         console.log("OSM Structured：", osmResponse.results.length);
         console.log("Warnings：", searchWarnings.length);
+
+        const googleSheetExport =
+            await exportLeadsToGoogleSheet(
+                keyword,
+                finalResults
+            );
+
         console.log("====================================");
 
         return NextResponse.json({
@@ -3845,6 +3927,9 @@ export async function POST(req: Request) {
             candidateCount: candidates.length,
             analyzedCount: analyzedResults.length,
             count: finalResults.length,
+
+            googleSheetExport,
+
             results: finalResults,
         });
     } catch (error) {
