@@ -3531,6 +3531,38 @@ async function analyzeCandidate(candidate: Candidate, keyword: string) {
 
 
 // ============================================================
+function formatTaipeiDateTime(
+    date = new Date()
+) {
+    const parts =
+        new Intl.DateTimeFormat(
+            "zh-TW",
+            {
+                timeZone: "Asia/Taipei",
+                year: "numeric",
+                month: "2-digit",
+                day: "2-digit",
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+                hour12: false,
+            }
+        ).formatToParts(date);
+
+    const map =
+        Object.fromEntries(
+            parts.map((part) => [
+                part.type,
+                part.value,
+            ])
+        );
+
+    return (
+        `${map.year}-${map.month}-${map.day} ` +
+        `${map.hour}:${map.minute}:${map.second}`
+    );
+}
+
 // Google Sheet Auto Export (fail-open)
 // ============================================================
 
@@ -3554,13 +3586,24 @@ async function exportLeadsToGoogleSheet(
         process.env.GOOGLE_SHEET_WEBHOOK_SECRET || ""
     ).trim();
 
-    // 沒設定就完全不影響既有搜尋流程。
+    // 沒設定就不影響既有搜尋流程，但一定留下明確 log。
     if (!webhookUrl) {
+        console.warn(
+            "⚠️ Google Sheet Export disabled：缺少 GOOGLE_SHEET_WEBHOOK_URL"
+        );
+
         return {
             enabled: false,
             success: false,
             exportedCount: 0,
+            error: "缺少 GOOGLE_SHEET_WEBHOOK_URL",
         };
+    }
+
+    if (!secret) {
+        console.warn(
+            "⚠️ Google Sheet Export：GOOGLE_SHEET_WEBHOOK_SECRET 未設定"
+        );
     }
 
     if (!Array.isArray(results) || results.length === 0) {
@@ -3571,7 +3614,7 @@ async function exportLeadsToGoogleSheet(
         };
     }
 
-    const exportedAt = new Date().toISOString();
+    const exportedAt = formatTaipeiDateTime();
 
     const leads = results.map((item: any) => ({
         exportedAt,
@@ -3907,7 +3950,7 @@ export async function POST(req: Request) {
         return NextResponse.json({
             success: true,
             keyword,
-            version: "v13",
+            version: "v13-prod-safe-sheetfix",
             searchEngine: "Tavily + OpenStreetMap",
             searchDepth: "basic",
             searchMode: "taiwan-structured-merchant-discovery",
